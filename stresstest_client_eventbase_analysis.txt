@@ -1,0 +1,455 @@
+================================================================================
+                    StressTest Client 端 EventBase 状态流转详解
+================================================================================
+
+================================================================================
+                           整体状态流转图
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           CLIENT LIFECYCLE                                       │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                        PHASE 1: INITIALIZATION                           │    │
+│  │                                                                          │    │
+│  │   TestRunner                                                             │    │
+│  │       │                                                                   │    │
+│  │       ▼                                                                   │    │
+│  │   ClientRunner(config)                                                   │    │
+│  │       │                                                                   │    │
+│  │       ├── 创建 Latch(count = threads × connections)                      │    │
+│  │       │                                                                   │    │
+│  │       └── for i in 0..numClientThreads:                                  │    │
+│  │             │                                                            │    │
+│  │             ▼                                                            │    │
+│  │       ┌─────────────────────────────────────────┐                        │    │
+│  │       │         ClientThread[i]                 │                        │    │
+│  │       │                                        │                        │    │
+│  │       │  1. 创建 ScopedEventBaseThread         │                        │    │
+│  │       │     └── 新线程 + EventBase 启动        │                        │    │
+│  │       │                                        │                        │    │
+│  │       │  2. runInEventBaseThreadAndWait()     │                        │    │
+│  │       │     │                                 │                        │    │
+│  │       │     ├── 记录内存基线                   │                        │    │
+│  │       │     │                                 │                        │    │
+│  │       │     └── createClients() ◄─────────────┼── 连接建立开始          │    │
+│  │       │           │                           │                        │    │
+│  │       │           ▼                           │                        │    │
+│  │       │     ┌───────────────────────┐        │                        │    │
+│  │       │     │  ClientFactory        │        │                        │    │
+│  │       │     │  createRocketClient() │        │                        │    │
+│  │       │     │       │               │        │                        │    │
+│  │       │     │       ▼               │        │                        │    │
+│  │       │     │  createSocket()       │        │                        │    │
+│  │       │     │       │               │        │                        │    │
+│  │       │     │       ▼               │        │                        │    │
+│  │       │     │  sock->connect(cb) ───┼──► 异步连接                      │    │
+│  │       │     │                       │        │                        │    │
+│  │       │     └───────────────────────┘        │                        │    │
+│  │       │                                        │                        │    │
+│  │       └────────────────────────────────────────┘                        │    │
+│  │                                                                          │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                        PHASE 2: CONNECTION                               │    │
+│  │                                                                          │    │
+│  │   EventBase 线程 (异步)                                                  │    │
+│  │       │                                                                   │    │
+│  │       ▼                                                                   │    │
+│  │   socket.connect() 发起                                                  │    │
+│  │       │                                                                   │    │
+│  │       │  [等待 TCP 握手 / TLS 握手]                                       │    │
+│  │       │                                                                   │    │
+│  │       ▼                                                                   │    │
+│  │   ┌───────────────────────────────────────────┐                          │    │
+│  │   │        ConnectCallback 触发               │                          │    │
+│  │   │                                           │                          │    │
+│  │   │   if (success):                           │                          │    │
+│  │   │       latch_.count_down() ◄── 计数减一    │                          │    │
+│  │   │                                           │                          │    │
+│  │   │   if (error):                             │                          │    │
+│  │   │       LOG(FATAL) "连接失败"               │                          │    │
+│  │   │                                           │                          │    │
+│  │   └───────────────────────────────────────────┘                          │    │
+│  │       │                                                                   │    │
+│  │       ▼                                                                   │    │
+│  │   所有连接完成 → latch_.wait() 返回                                       │    │
+│  │                                                                          │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                        PHASE 3: WARMUP + RUN                             │    │
+│  │                                                                          │    │
+│  │   ClientRunner.run(test)                                                 │    │
+│  │       │                                                                   │    │
+│  │       ├── latch_.wait()  ◄── 等待所有连接就绪                            │    │
+│  │       │                                                                   │    │
+│  │       └── for each ClientThread:                                         │    │
+│  │             thread->run(test)                                            │    │
+│  │                 │                                                        │    │
+│  │                 ├── checkIsContinuous()                                  │    │
+│  │                 │     └── 注册 TestDoneTimeout (runtime秒后触发)          │    │
+│  │                 │                                                        │    │
+│  │                 ├── warmup()                                             │    │
+│  │                 │     └── 注册 WarmupDoneTimeout (warmup秒后重置统计)     │    │
+│  │                 │                                                        │    │
+│  │                 └── concurrentRun(test) 或 loadGeneratedRun(test)        │    │
+│  │                                                                          │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                        PHASE 4: EXECUTION                                │    │
+│  │                                                                          │    │
+│  │   EventBase 线程 (持续运行)                                              │    │
+│  │                                                                          │    │
+│  │   ┌─────────────────────────────────────────────────────────────────┐   │    │
+│  │   │                    协程执行循环                                  │   │    │
+│  │   │                                                                  │   │    │
+│  │   │   while (!testDone_ && connectionGood_) {                       │   │    │
+│  │   │       │                                                         │   │    │
+│  │   │       ▼                                                         │   │    │
+│  │   │   co_await test->runWorkload(client)                           │   │    │
+│  │   │       │                                                         │   │    │
+│  │   │       ├── co_ping()                                             │   │    │
+│  │   │       ├── co_echo()                                             │   │    │
+│  │   │       ├── co_requestResponseTm()                                │   │    │
+│  │   │       └── ...                                                   │   │    │
+│  │   │           │                                                     │   │    │
+│  │   │           ▼                                                     │   │    │
+│  │   │   timedExecute() 包装                                           │   │    │
+│  │   │       │                                                         │   │    │
+│  │   │       ├── 记录开始时间                                          │   │    │
+│  │   │       ├── 发送 RPC 请求                                         │   │    │
+│  │   │       ├── 等待响应 (协程挂起)                                   │   │    │
+│  │   │       ├── 收到响应 (协程恢复)                                   │   │    │
+│  │   │       ├── 记录延迟                                              │   │    │
+│  │   │       └── stats_.numSuccess++                                   │   │    │
+│  │   │                                                                  │   │    │
+│  │   │   }  // 继续下一个请求                                          │   │    │
+│  │   │                                                                  │   │    │
+│  │   └─────────────────────────────────────────────────────────────────┘   │    │
+│  │                                                                          │    │
+│  │   ┌─────────────────────────────────────────────────────────────────┐   │    │
+│  │   │                    Timer 回调 (并行)                             │   │    │
+│  │   │                                                                  │   │    │
+│  │   │   [warmup 秒后]                                                  │   │    │
+│  │   │   WarmupDoneTimeout::timeoutExpired()                           │   │    │
+│  │   │       └── 重置统计: numSuccess=0, numFailure=0                  │   │    │
+│  │   │                                                                  │   │    │
+│  │   │   [每 1 秒]                                                      │   │    │
+│  │   │   ClientThread::timeoutExpired()                                │   │    │
+│  │   │       └── memoryHistogram_.addValue(当前内存)                   │   │    │
+│  │   │                                                                  │   │    │
+│  │   │   [runtime 秒后]                                                 │   │    │
+│  │   │   TestDoneTimeout::timeoutExpired()                             │   │    │
+│  │   │       └── testDone_ = true  ◄── 循环退出条件                    │   │    │
+│  │   │                                                                  │   │    │
+│  │   └─────────────────────────────────────────────────────────────────┘   │    │
+│  │                                                                          │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                        PHASE 5: CLEANUP                                  │    │
+│  │                                                                          │    │
+│  │   testDone_ = true                                                       │    │
+│  │       │                                                                   │    │
+│  │       ▼                                                                   │    │
+│  │   协程循环退出                                                            │    │
+│  │       │                                                                   │    │
+│  │       ▼                                                                   │    │
+│  │   scope_.joinAsync() 完成                                                │    │
+│  │       │                                                                   │    │
+│  │       ▼                                                                   │    │
+│  │   收集统计:                                                               │    │
+│  │       ├── getRpcStats()                                                  │    │
+│  │       └── getMemoryStats()                                               │    │
+│  │                                                                          │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                         EventBase 线程模型详解
+================================================================================
+
+1. 线程结构
+-----------
+
+┌────────────────────────────────────────────────────────────────────┐
+│                         主线程 (main thread)                        │
+│                                                                    │
+│   TestRunner.runTests()                                            │
+│       │                                                            │
+│       └── folly::collect(futures).get()  ◄── 阻塞等待              │
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘
+                              │
+                              │ 创建 N 个
+                              ▼
+┌────────────────────────────────────────────────────────────────────┐
+│                    ClientThread[0] 线程                             │
+│                                                                    │
+│   ┌──────────────────────────────────────────────────────────────┐ │
+│   │  EventBase (事件循环)                                         │ │
+│   │                                                              │ │
+│   │   while (running) {                                          │ │
+│   │       evb.loopOnce();  // 处理 I/O 事件、Timer、回调         │ │
+│   │   }                                                          │ │
+│   │                                                              │ │
+│   │   ┌────────────────┐  ┌────────────────┐                    │ │
+│   │   │  AsyncSocket   │  │  AsyncSocket   │  ... M 个连接      │ │
+│   │   │  (connection1) │  │  (connection2) │                    │ │
+│   │   └────────────────┘  └────────────────┘                    │ │
+│   │                                                              │ │
+│   │   ┌────────────────────────────────────────────────────────┐ │ │
+│   │   │  HHWheelTimer (定时器管理)                              │ │ │
+│   │   │                                                        │ │ │
+│   │   │  - WarmupDoneTimeout (warmup 秒)                       │ │ │
+│   │   │  - TestDoneTimeout (runtime 秒)                        │ │ │
+│   │   │  - MemoryStatsCallback (每 1 秒)                       │ │ │
+│   │   └────────────────────────────────────────────────────────┘ │ │
+│   │                                                              │ │
+│   │   ┌────────────────────────────────────────────────────────┐ │ │
+│   │   │  AsyncScope (协程调度)                                  │ │ │
+│   │   │                                                        │ │ │
+│   │   │  Task1: runConcurrentInternal() ──► co_ping() loop     │ │ │
+│   │   │  Task2: runConcurrentInternal() ──► co_ping() loop     │ │ │
+│   │   │  ...                                                   │ │ │
+│   │   └────────────────────────────────────────────────────────┘ │ │
+│   │                                                              │ │
+│   └──────────────────────────────────────────────────────────────┘ │
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘
+                              │
+                              │ ... N-1 个类似
+                              ▼
+┌────────────────────────────────────────────────────────────────────┐
+│                    ClientThread[N-1] 线程                           │
+│                         ...                                        │
+└────────────────────────────────────────────────────────────────────┘
+
+
+2. 关键代码解析
+---------------
+
+步骤 1: 创建 EventBase 线程
+--------------------------
+
+// ClientThread 构造函数
+ClientThread(const ClientConfig& cfg, size_t index, ...) {
+  // 创建带自定义 Backend 的 EventBase
+  auto factoryFunction = cfg.connConfig.ioUring
+      ? folly::EventBaseBackendBase::FactoryFunc(getIOUringBackend)
+      : folly::EventBaseBackendBase::FactoryFunc(getDefaultBackend);
+  
+  // 启动独立线程 + EventBase
+  thread_ = std::make_unique<folly::ScopedEventBaseThread>(
+      folly::EventBase::Options().setBackendFactory(factoryFunction),
+      ebm,
+      fmt::format("client-runner-thread-{}", index));
+  
+  auto* evb = thread_->getEventBase();
+  
+  // 在 EventBase 线程中同步执行初始化
+  evb->runInEventBaseThreadAndWait([&]() {
+    memoryStats_.threadStart = getThreadMemoryUsage();
+    clients_ = createClients(evb, cfg, rpcStats_);  // 创建连接
+    memoryStats_.connectionsEstablished = getThreadMemoryUsage();
+    evb->timer().scheduleTimeout(this, std::chrono::seconds(1));  // 内存监控
+  });
+}
+
+
+步骤 2: 异步连接建立
+--------------------
+
+// ClientFactory.cpp
+folly::AsyncTransport::UniquePtr createEPollSocket(
+    folly::EventBase* evb, const ClientConnectionConfig& cfg) {
+  auto sock = folly::AsyncSocket::newSocket(evb);
+  
+  // 异步连接，cfg.connectCb 是 ClientRunner (实现了 ConnectCallback)
+  sock->connect(cfg.connectCb, cfg.serverHost);
+  
+  return sock;  // 立即返回，连接在后台进行
+}
+
+
+步骤 3: 连接完成回调
+--------------------
+
+// ClientRunner.cpp
+void ClientRunner::connectSuccess() noexcept {
+  latch_.count_down();  // 每个连接完成时计数减一
+}
+
+void ClientRunner::connectErr(const folly::AsyncSocketException& ex) noexcept {
+  LOG(FATAL) << "Socket connection failed: " << ex.what();
+}
+
+
+步骤 4: 开始压测执行
+--------------------
+
+// ClientRunner::run()
+void ClientRunner::run(const StressTestBase* test) {
+  latch_.wait();  // 阻塞直到所有连接建立
+  
+  // 为每个 ClientThread 启动测试
+  for (auto& clientThread : clientThreads_) {
+    starts.push_back(clientThread->run(test));
+  }
+  
+  // 如果使用负载生成器，启动它
+  if (useLoadGenerator_) {
+    for (const auto& generator : loadGenerator_) {
+      generator->start();
+    }
+  }
+  
+  folly::collect(std::move(starts)).get();  // 等待所有线程完成
+}
+
+
+步骤 5: ClientThread 运行循环
+-----------------------------
+
+// ClientThread::run()
+folly::SemiFuture<folly::Unit> run(const StressTestBase* test) {
+  // 注册定时器
+  checkIsContinuous();  // TestDoneTimeout
+  warmup();             // WarmupDoneTimeout
+  
+  // 启动协程
+  if (useLoadGenerator_) {
+    loadGeneratedRun(test);
+  } else {
+    concurrentRun(test);
+  }
+  
+  return scope_.joinAsync()
+      .semi()
+      .via(thread_->getEventBase())
+      .thenValue([&](auto&&) -> folly::Unit {
+        cancelTimeout();
+        // 收集内存统计
+        memoryStats_.p50 = memoryHistogram_.getPercentileEstimate(.5);
+        memoryStats_.p99 = memoryHistogram_.getPercentileEstimate(.99);
+        return folly::Unit{};
+      });
+}
+
+// 并发执行模式
+void concurrentRun(const StressTestBase* test) {
+  for (auto& client : clients_) {
+    // 每个客户端一个协程
+    scope_.add(co_withExecutor(
+        thread_->getEventBase(),
+        runConcurrentInternal(client.get(), test)));
+  }
+}
+
+// 协程内部循环
+folly::coro::Task<void> runConcurrentInternal(
+    StressTestClient* client, const StressTestBase* test) {
+  size_t count = 0;
+  while (!testDone_ && client->connectionGood()) {  // 检查终止条件
+    co_await test->runWorkload(client);  // 执行测试用例
+    count++;
+    if (numRunsPerClient_ > 0 && count >= numRunsPerClient_) {
+      break;
+    }
+  }
+}
+
+
+================================================================================
+                              时序图
+================================================================================
+
+ 时间 ──────────────────────────────────────────────────────────────────────────►
+ 
+ 主线程         ClientThread[0]           EventBase[0]              Server
+   │                 │                        │                       │
+   │  创建           │                        │                       │
+   ├────────────────►│                        │                       │
+   │                 │                        │                       │
+   │                 │  runInEventBaseThreadAndWait                   │
+   │                 ├───────────────────────►│                       │
+   │                 │                        │                       │
+   │                 │                        │  socket.connect() ───►│
+   │                 │                        │                       │
+   │                 │                        │  ◄─── TCP/TLS 握手 ───┤
+   │                 │                        │                       │
+   │                 │                        │  connectSuccess()     │
+   │                 │                        │  latch_.count_down()  │
+   │                 │                        │                       │
+   │                 │  ◄─────────────────────┤  (初始化完成)         │
+   │                 │                        │                       │
+   │  ... 等待所有线程完成初始化 ...          │                       │
+   │                 │                        │                       │
+   │  latch_.wait() 返回                     │                       │
+   │                 │                        │                       │
+   │  thread->run(test)                      │                       │
+   ├────────────────►│                        │                       │
+   │                 │                        │                       │
+   │                 │  注册 TestDoneTimeout  │                       │
+   │                 ├───────────────────────►│                       │
+   │                 │                        │                       │
+   │                 │  注册 WarmupTimeout    │                       │
+   │                 ├───────────────────────►│                       │
+   │                 │                        │                       │
+   │                 │  scope_.add(coro)      │                       │
+   │                 ├───────────────────────►│                       │
+   │                 │                        │                       │
+   │                 │                        │  ┌─────────────────┐  │
+   │                 │                        │  │ 协程循环:       │  │
+   │                 │                        │  │ co_ping() ──────┼──►│
+   │                 │                        │  │   ◄─────────────┼──┤
+   │                 │                        │  │ co_ping() ──────┼──►│
+   │                 │                        │  │   ◄─────────────┼──┤
+   │                 │                        │  │ ...             │  │
+   │                 │                        │  └─────────────────┘  │
+   │                 │                        │                       │
+   │                 │                        │  [warmup 秒后]        │
+   │                 │                        │  WarmupDoneTimeout    │
+   │                 │                        │  重置统计             │
+   │                 │                        │                       │
+   │                 │                        │  [每秒]               │
+   │                 │                        │  记录内存使用         │
+   │                 │                        │                       │
+   │                 │                        │  [runtime 秒后]       │
+   │                 │                        │  TestDoneTimeout      │
+   │                 │                        │  testDone_ = true     │
+   │                 │                        │                       │
+   │                 │                        │  协程退出             │
+   │                 │                        │  scope_.joinAsync()   │
+   │                 │                        │                       │
+   │                 │  ◄─────────────────────┤  返回统计             │
+   │                 │                        │                       │
+   │  ◄──────────────┤  SemiFuture 完成       │                       │
+   │                 │                        │                       │
+   │  收集所有统计   │                        │                       │
+   │  输出结果       │                        │                       │
+   │                 │                        │                       │
+   ▼                 ▼                        ▼                       ▼
+
+
+================================================================================
+                           核心机制总结
+================================================================================
+
+┌──────────────────┬────────────────────────────────┬──────────────────────────┐
+│      机制        │           实现方式             │          作用            │
+├──────────────────┼────────────────────────────────┼──────────────────────────┤
+│ EventBase        │ ScopedEventBaseThread          │ 每线程独立事件循环，处理 I/O │
+│ 异步连接         │ socket->connect(cb)            │ 非阻塞连接，回调通知完成     │
+│ 同步等待         │ Latch                          │ 等待所有连接就绪后开始压测   │
+│ 协程调度         │ AsyncScope + co_withExecutor   │ 在 EventBase 上调度协程     │
+│ 定时控制         │ HHWheelTimer::Callback         │ warmup/runtime 超时控制     │
+│ 状态传递         │ testDone_ 引用                 │ Timer设置标志，协程检查退出  │
+│ 统计收集         │ timedExecute()                 │ 包装每个RPC调用，记录延迟    │
+└──────────────────┴────────────────────────────────┴──────────────────────────┘
