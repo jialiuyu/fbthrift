@@ -1,5 +1,9 @@
 *~
 
+.vscode
+.github/*
+.claude
+
 # autoreconf artifacts
 Makefile.in
 /thrift/aclocal.m4
