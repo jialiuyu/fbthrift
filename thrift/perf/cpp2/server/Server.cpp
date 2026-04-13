@@ -32,6 +32,8 @@
 DEFINE_int32(port, 7777, "Server port");
 DEFINE_string(
     unix_socket_path, "", "Unix socket to listen on, supersedes port");
+DEFINE_bool(
+    shm, false, "Use shared memory transport with busy-poll mode");
 
 DEFINE_int32(io_threads, 0, "Number of IO threads (0 means number of cores)");
 DEFINE_int32(cpu_threads, 0, "Number of CPU threads (0 means number of cores)");
@@ -84,6 +86,14 @@ int main(int argc, char** argv) {
     sock->bind(addr);
     server->useExistingSocket(std::move(sock));
     LOG(INFO) << "Listening on " << FLAGS_unix_socket_path;
+  } else if (FLAGS_shm) {
+    // SHM mode requires Unix domain socket - auto-create one
+    folly::AsyncServerSocket::UniquePtr sock{new folly::AsyncServerSocket};
+    folly::SocketAddress addr;
+    addr.setFromPath("/tmp/thrift_shm_benchmark");
+    sock->bind(addr);
+    server->useExistingSocket(std::move(sock));
+    LOG(INFO) << "SHM mode: Listening on /tmp/thrift_shm_benchmark";
   } else {
     LOG(INFO) << "Listening on port " << FLAGS_port;
     server->setPort(FLAGS_port);
@@ -91,6 +101,17 @@ int main(int argc, char** argv) {
   server->setNumIOWorkerThreads(FLAGS_io_threads);
   server->setNumCPUWorkerThreads(FLAGS_cpu_threads);
   server->setInterface(cpp2PFac);
+
+  // Enable shared memory transport if requested
+  if (FLAGS_shm) {
+    server->setUseShmTransport(true);
+    LOG(INFO) << "Shared memory transport with busy-poll enabled";
+    // SHM requires Unix domain socket for FD passing
+    if (FLAGS_unix_socket_path.empty()) {
+      FLAGS_unix_socket_path = "/tmp/thrift_shm_benchmark";
+      LOG(INFO) << "Auto-setting Unix socket path: " << FLAGS_unix_socket_path;
+    }
+  }
 
   server->addRoutingHandler(createHTTP2RoutingHandler(server));
 

@@ -32,7 +32,7 @@ DEFINE_string(
 
 // Client Settings
 DEFINE_int32(num_clients, 0, "Number of clients to use. (Default: 1 per core)");
-DEFINE_string(transport, "header", "Transport to use: header, rocket, http2");
+DEFINE_string(transport, "header", "Transport to use: header, rocket, http2, shm");
 
 // General Settings
 DEFINE_int32(stats_interval_sec, 1, "Seconds between stats");

@@ -22,6 +22,8 @@
 #include <folly/experimental/io/AsyncIoUringSocketFactory.h>
 #include <folly/io/async/AsyncSSLSocket.h>
 #include <folly/io/async/AsyncSocket.h>
+#include <folly/io/async/BusyPollSharedMemoryTransport.h>
+#include <folly/io/async/BusyPollShmHandshake.h>
 #include <folly/io/async/EventBaseLocal.h>
 #include <folly/io/async/fdsock/AsyncFdSocket.h>
 #include <folly/portability/Sockets.h>
@@ -270,6 +272,32 @@ void Cpp2Worker::handleHeader(
 
 std::shared_ptr<folly::AsyncTransport> Cpp2Worker::createThriftTransport(
     folly::AsyncTransport::UniquePtr sock) {
+  // Check if shared memory transport upgrade is enabled
+  if (server_ && server_->getUseShmTransport()) {
+    // Upgrade to shared memory transport via handshake
+    // The socket must be a Unix domain socket (AsyncFdSocket) for FD passing
+    auto* fdSock = sock->getUnderlyingTransport<folly::AsyncFdSocket>();
+    if (fdSock) {
+      try {
+        folly::BusyPollSharedMemoryTransport::Config shmConfig;
+        auto shmResult = folly::shmHandshakeServer(
+            getEventBase(), fdSock, shmConfig);
+        auto shmTransport = folly::BusyPollSharedMemoryTransport::create(
+            getEventBase(),
+            std::move(shmResult.writeRegion),
+            std::move(shmResult.readRegion),
+            shmResult.peerEventFd,
+            shmConfig);
+        return apache::thrift::transport::detail::convertToShared(
+            folly::AsyncTransport::UniquePtr(shmTransport.release()));
+      } catch (const std::exception& ex) {
+        FB_LOG(ERROR) << "SHM handshake failed, falling back to TCP: "
+                      << ex.what();
+        // Fall through to regular TCP transport
+      }
+    }
+  }
+
   folly::AsyncSocket* tsock =
       sock->getUnderlyingTransport<folly::AsyncSocket>();
   if (tsock) {

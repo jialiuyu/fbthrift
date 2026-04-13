@@ -1964,6 +1964,9 @@ class ThriftServer : public apache::thrift::concurrency::Runnable,
   class ConnectionEventCallback;
   std::shared_ptr<ConnectionEventCallback> connEventCallback_;
 
+  // Shared memory transport configuration
+  bool useShmTransport_{false};
+
   void handleSetupFailure(void);
 
   void updateCertsToWatch();
@@ -2709,6 +2712,14 @@ class ThriftServer : public apache::thrift::concurrency::Runnable,
       const std::shared_ptr<wangle::AcceptorFactory>& acceptorFactory) {
     acceptorFactory_ = acceptorFactory;
   }
+
+  /**
+   * Enable/disable shared memory transport with busy-poll mode.
+   * When enabled, accepted connections will be upgraded to use
+   * shared memory via BusyPollSharedMemoryTransport.
+   */
+  void setUseShmTransport(bool use) { useShmTransport_ = use; }
+  bool getUseShmTransport() const { return useShmTransport_; }
 
   /**
    * Get the speed of adjusting connection accept rate.

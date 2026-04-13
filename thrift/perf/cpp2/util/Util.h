@@ -19,8 +19,11 @@
 #include <folly/SocketAddress.h>
 #include <folly/io/async/AsyncSSLSocket.h>
 #include <folly/io/async/AsyncSocket.h>
+#include <folly/io/async/BusyPollSharedMemoryTransport.h>
+#include <folly/io/async/BusyPollShmHandshake.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
+#include <folly/io/async/fdsock/AsyncFdSocket.h>
 #include <thrift/lib/cpp2/async/HeaderClientChannel.h>
 #include <thrift/lib/cpp2/async/RocketClientChannel.h>
 #include <thrift/lib/cpp2/server/ThriftServer.h>
@@ -42,6 +45,10 @@ folly::AsyncSocket::UniquePtr getSocket(
     const folly::SocketAddress& addr,
     bool encrypted,
     std::list<std::string> advertizedProtocols = {});
+
+folly::AsyncFdSocket::UniquePtr getFdSocket(
+    folly::EventBase* evb,
+    const folly::SocketAddress& addr);
 
 } // namespace apache::thrift::perf
 
@@ -75,6 +82,27 @@ static std::unique_ptr<AsyncClient> newRocketClient(
 }
 
 template <typename AsyncClient>
+static std::unique_ptr<AsyncClient> newShmClient(
+    folly::EventBase* evb, const folly::SocketAddress& addr) {
+  // 1. Connect via Unix domain socket (for handshake)
+  auto fdSock = apache::thrift::perf::getFdSocket(evb, addr);
+  // 2. Perform shared memory handshake
+  folly::BusyPollSharedMemoryTransport::Config shmConfig;
+  auto shmResult = folly::shmHandshakeClient(evb, fdSock.get(), shmConfig);
+  // 3. Create BusyPollSharedMemoryTransport
+  auto transport = folly::BusyPollSharedMemoryTransport::create(
+      evb,
+      std::move(shmResult.writeRegion),
+      std::move(shmResult.readRegion),
+      shmResult.peerEventFd,
+      shmConfig);
+  // 4. Wrap with RocketClientChannel
+  auto chan = RocketClientChannel::newChannel(
+      folly::AsyncTransport::UniquePtr(transport.release()));
+  return std::make_unique<AsyncClient>(std::move(chan));
+}
+
+template <typename AsyncClient>
 static std::unique_ptr<AsyncClient> newClient(
     folly::EventBase* evb,
     const folly::SocketAddress& addr,
@@ -88,6 +116,9 @@ static std::unique_ptr<AsyncClient> newClient(
   }
   if (transport == "http2") {
     return newHTTP2Client<AsyncClient>(evb, addr, encrypted);
+  }
+  if (transport == "shm") {
+    return newShmClient<AsyncClient>(evb, addr);
   }
   return nullptr;
 }
