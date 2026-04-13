@@ -23,7 +23,6 @@
 #include <folly/io/async/BusyPollShmHandshake.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
-#include <folly/io/async/fdsock/AsyncFdSocket.h>
 #include <thrift/lib/cpp2/async/HeaderClientChannel.h>
 #include <thrift/lib/cpp2/async/RocketClientChannel.h>
 #include <thrift/lib/cpp2/server/ThriftServer.h>
@@ -45,10 +44,6 @@ folly::AsyncSocket::UniquePtr getSocket(
     const folly::SocketAddress& addr,
     bool encrypted,
     std::list<std::string> advertizedProtocols = {});
-
-folly::AsyncFdSocket::UniquePtr getFdSocket(
-    folly::EventBase* evb,
-    const folly::SocketAddress& addr);
 
 } // namespace apache::thrift::perf
 
@@ -84,17 +79,20 @@ static std::unique_ptr<AsyncClient> newRocketClient(
 template <typename AsyncClient>
 static std::unique_ptr<AsyncClient> newShmClient(
     folly::EventBase* evb, const folly::SocketAddress& addr) {
-  // 1. Connect via Unix domain socket (for handshake)
-  auto fdSock = apache::thrift::perf::getFdSocket(evb, addr);
-  // 2. Perform shared memory handshake
+  // 1. Connect via Unix domain socket (for handshake only, no FD passing needed)
+  auto sock = apache::thrift::perf::getSocket(evb, addr, false);
+  // 2. Perform shared memory handshake (exchange region names + GQM names)
   folly::BusyPollSharedMemoryTransport::Config shmConfig;
-  auto shmResult = folly::shmHandshakeClient(evb, fdSock.get(), shmConfig);
-  // 3. Create BusyPollSharedMemoryTransport
+  shmConfig.pollingMode =
+      folly::BusyPollSharedMemoryTransport::PollingMode::ADAPTIVE;
+  auto shmResult = folly::shmHandshakeClient(evb, sock.get(), shmConfig);
+  // 3. Create BusyPollSharedMemoryTransport with GQM queues
   auto transport = folly::BusyPollSharedMemoryTransport::create(
       evb,
       std::move(shmResult.writeRegion),
       std::move(shmResult.readRegion),
-      shmResult.peerEventFd,
+      std::move(shmResult.gqmWrite),
+      std::move(shmResult.gqmRead),
       shmConfig);
   // 4. Wrap with RocketClientChannel
   auto chan = RocketClientChannel::newChannel(

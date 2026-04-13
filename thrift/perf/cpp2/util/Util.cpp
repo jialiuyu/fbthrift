@@ -45,13 +45,4 @@ folly::AsyncSocket::UniquePtr getSocket(
   return sock;
 }
 
-folly::AsyncFdSocket::UniquePtr getFdSocket(
-    folly::EventBase* evb,
-    const folly::SocketAddress& addr) {
-  // Shared memory transport requires Unix domain socket for FD passing
-  CHECK(addr.getFamily() == AF_UNIX)
-      << "Shared memory transport requires Unix domain socket";
-  return folly::AsyncFdSocket::UniquePtr{new folly::AsyncFdSocket(evb, addr)};
-}
-
 } // namespace apache::thrift::perf

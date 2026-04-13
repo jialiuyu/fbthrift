@@ -275,26 +275,26 @@ std::shared_ptr<folly::AsyncTransport> Cpp2Worker::createThriftTransport(
   // Check if shared memory transport upgrade is enabled
   if (server_ && server_->getUseShmTransport()) {
     // Upgrade to shared memory transport via handshake
-    // The socket must be a Unix domain socket (AsyncFdSocket) for FD passing
-    auto* fdSock = sock->getUnderlyingTransport<folly::AsyncFdSocket>();
-    if (fdSock) {
-      try {
-        folly::BusyPollSharedMemoryTransport::Config shmConfig;
-        auto shmResult = folly::shmHandshakeServer(
-            getEventBase(), fdSock, shmConfig);
-        auto shmTransport = folly::BusyPollSharedMemoryTransport::create(
-            getEventBase(),
-            std::move(shmResult.writeRegion),
-            std::move(shmResult.readRegion),
-            shmResult.peerEventFd,
-            shmConfig);
-        return apache::thrift::transport::detail::convertToShared(
-            folly::AsyncTransport::UniquePtr(shmTransport.release()));
-      } catch (const std::exception& ex) {
-        FB_LOG(ERROR) << "SHM handshake failed, falling back to TCP: "
-                      << ex.what();
-        // Fall through to regular TCP transport
-      }
+    // Works with any socket type (no FD passing needed with GQM)
+    try {
+      folly::BusyPollSharedMemoryTransport::Config shmConfig;
+      shmConfig.pollingMode =
+          folly::BusyPollSharedMemoryTransport::PollingMode::ADAPTIVE;
+      auto shmResult = folly::shmHandshakeServer(
+          getEventBase(), sock.get(), shmConfig);
+      auto shmTransport = folly::BusyPollSharedMemoryTransport::create(
+          getEventBase(),
+          std::move(shmResult.writeRegion),
+          std::move(shmResult.readRegion),
+          std::move(shmResult.gqmWrite),
+          std::move(shmResult.gqmRead),
+          shmConfig);
+      return apache::thrift::transport::detail::convertToShared(
+          folly::AsyncTransport::UniquePtr(shmTransport.release()));
+    } catch (const std::exception& ex) {
+      FB_LOG(ERROR) << "SHM handshake failed, falling back to TCP: "
+                    << ex.what();
+      // Fall through to regular TCP transport
     }
   }
 
