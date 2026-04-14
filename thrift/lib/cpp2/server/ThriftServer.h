@@ -113,6 +113,11 @@ THRIFT_FLAG_DECLARE_bool(enable_io_queue_lag_detection);
 THRIFT_FLAG_DECLARE_bool(default_sync_max_requests_to_concurrency_limit);
 THRIFT_FLAG_DECLARE_bool(default_sync_max_qps_to_execution_rate);
 
+namespace folly {
+class MemoryProvider;
+class ShmPollerService;
+}
+
 namespace wangle {
 class ConnectionManager;
 }
@@ -1966,6 +1971,8 @@ class ThriftServer : public apache::thrift::concurrency::Runnable,
 
   // Shared memory transport configuration
   bool useShmTransport_{false};
+  std::shared_ptr<folly::MemoryProvider> shmMemoryProvider_;
+  std::shared_ptr<folly::ShmPollerService> shmPollerService_;
 
   void handleSetupFailure(void);
 
@@ -2720,6 +2727,20 @@ class ThriftServer : public apache::thrift::concurrency::Runnable,
    */
   void setUseShmTransport(bool use) { useShmTransport_ = use; }
   bool getUseShmTransport() const { return useShmTransport_; }
+
+  void setShmMemoryProvider(std::shared_ptr<folly::MemoryProvider> p) {
+    shmMemoryProvider_ = std::move(p);
+  }
+  std::shared_ptr<folly::MemoryProvider> getShmMemoryProvider() const {
+    return shmMemoryProvider_;
+  }
+
+  void setShmPollerService(std::shared_ptr<folly::ShmPollerService> s) {
+    shmPollerService_ = std::move(s);
+  }
+  std::shared_ptr<folly::ShmPollerService> getShmPollerService() const {
+    return shmPollerService_;
+  }
 
   /**
    * Get the speed of adjusting connection accept rate.

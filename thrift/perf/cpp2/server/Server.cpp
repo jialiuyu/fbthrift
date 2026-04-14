@@ -16,7 +16,15 @@
 
 #include <glog/logging.h>
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <thread>
+
 #include <folly/init/Init.h>
+#include <folly/io/async/ImportedMemoryProvider.h>
+#include <folly/io/async/ShmPollerService.h>
 #include <folly/portability/GFlags.h>
 #include <folly/system/HardwareConcurrency.h>
 
@@ -26,14 +34,36 @@
 #include <thrift/perf/cpp2/server/BenchmarkHandler.h>
 #include <thrift/perf/cpp2/util/QPSStats.h>
 
-#include <unistd.h>
-#include <thread>
-
 DEFINE_int32(port, 7777, "Server port");
 DEFINE_string(
     unix_socket_path, "", "Unix socket to listen on, supersedes port");
 DEFINE_bool(
     shm, false, "Use shared memory transport with busy-poll mode");
+
+// CXL memory device files (stub paths — replace with actual device paths)
+// memfile0: server→client direction (server writes, client reads)
+// memfile1: client→server direction (client writes, server reads)
+static constexpr const char* kShmDevFileS2C = "/dev/memfile0";
+static constexpr const char* kShmDevFileC2S = "/dev/memfile1";
+static constexpr size_t kShmPoolSize = 1UL * 1024 * 1024 * 1024; // 1 GB per direction
+static constexpr size_t kShmDataRegionSize = 4 * 1024 * 1024;    // per-connection data
+
+static void* mmapDeviceFile(const char* path, size_t size) {
+  int fd = ::open(path, O_RDWR);
+  if (fd < 0) {
+    LOG(WARNING) << "Cannot open CXL device " << path << ": "
+                 << strerror(errno) << ", falling back to anonymous mmap";
+    void* ptr = ::mmap(
+        nullptr, size, PROT_READ | PROT_WRITE,
+        MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    CHECK(ptr != MAP_FAILED) << "anonymous mmap failed: " << strerror(errno);
+    return ptr;
+  }
+  void* ptr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  ::close(fd);
+  CHECK(ptr != MAP_FAILED) << "mmap " << path << " failed: " << strerror(errno);
+  return ptr;
+}
 
 DEFINE_int32(io_threads, 0, "Number of IO threads (0 means number of cores)");
 DEFINE_int32(cpu_threads, 0, "Number of CPU threads (0 means number of cores)");
@@ -104,7 +134,24 @@ int main(int argc, char** argv) {
 
   if (FLAGS_shm) {
     server->setUseShmTransport(true);
-    LOG(INFO) << "Shared memory transport with busy-poll enabled";
+
+    void* s2cMem = mmapDeviceFile(kShmDevFileS2C, kShmPoolSize);
+    void* c2sMem = mmapDeviceFile(kShmDevFileC2S, kShmPoolSize);
+
+    auto provider = std::make_shared<folly::ImportedMemoryProvider>();
+    provider->registerPool("s2c", s2cMem, kShmPoolSize);
+    provider->registerPool("c2s", c2sMem, kShmPoolSize);
+
+    auto pollerService = std::make_shared<folly::ShmPollerService>();
+    pollerService->initFromProvider(*provider, "s2c", "c2s", true);
+    pollerService->startPollers();
+
+    server->setShmMemoryProvider(std::move(provider));
+    server->setShmPollerService(std::move(pollerService));
+
+    LOG(INFO) << "SHM mode: CXL device files " << kShmDevFileS2C
+              << " / " << kShmDevFileC2S << " mapped (" << kShmPoolSize
+              << " bytes each), ShmPollerService started";
   }
 
   server->addRoutingHandler(createHTTP2RoutingHandler(server));

@@ -15,6 +15,12 @@
  */
 
 #include <algorithm>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+#include <folly/io/async/ImportedMemoryProvider.h>
+#include <folly/io/async/ShmPollerService.h>
 #include <folly/system/HardwareConcurrency.h>
 #include <thrift/perf/cpp2/if/gen-cpp2/StreamBenchmark.h>
 #include <thrift/perf/cpp2/util/Operation.h>
@@ -33,6 +39,49 @@ DEFINE_string(
 // Client Settings
 DEFINE_int32(num_clients, 0, "Number of clients to use. (Default: 1 per core)");
 DEFINE_string(transport, "header", "Transport to use: header, rocket, http2, shm");
+
+// CXL memory device files (stub paths — must match Server.cpp)
+// memfile0: server→client direction (server writes, client reads)
+// memfile1: client→server direction (client writes, server reads)
+static constexpr const char* kShmDevFileS2C = "/dev/memfile0";
+static constexpr const char* kShmDevFileC2S = "/dev/memfile1";
+static constexpr size_t kShmPoolSize = 1UL * 1024 * 1024 * 1024; // 1 GB per direction
+static constexpr size_t kShmDataRegionSize = 4 * 1024 * 1024;    // per-connection data
+
+static void* mmapDeviceFile(const char* path, size_t size) {
+  int fd = ::open(path, O_RDWR);
+  if (fd < 0) {
+    LOG(WARNING) << "Cannot open CXL device " << path << ": "
+                 << strerror(errno) << ", falling back to anonymous mmap";
+    void* ptr = ::mmap(
+        nullptr, size, PROT_READ | PROT_WRITE,
+        MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    CHECK(ptr != MAP_FAILED) << "anonymous mmap failed: " << strerror(errno);
+    return ptr;
+  }
+  void* ptr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  ::close(fd);
+  CHECK(ptr != MAP_FAILED) << "mmap " << path << " failed: " << strerror(errno);
+  return ptr;
+}
+
+static std::shared_ptr<folly::ShmPollerService> makeShmPollerService() {
+  void* c2sMem = mmapDeviceFile(kShmDevFileC2S, kShmPoolSize);
+  void* s2cMem = mmapDeviceFile(kShmDevFileS2C, kShmPoolSize);
+
+  auto provider = std::make_shared<folly::ImportedMemoryProvider>();
+  provider->registerPool("c2s", c2sMem, kShmPoolSize);
+  provider->registerPool("s2c", s2cMem, kShmPoolSize);
+
+  auto pollerService = std::make_shared<folly::ShmPollerService>();
+  pollerService->initFromProvider(*provider, "c2s", "s2c", false);
+  pollerService->startPollers();
+
+  LOG(INFO) << "SHM client: CXL device files " << kShmDevFileS2C
+            << " / " << kShmDevFileC2S << " mapped (" << kShmPoolSize
+            << " bytes each), ShmPollerService started";
+  return pollerService;
+}
 
 // General Settings
 DEFINE_int32(stats_interval_sec, 1, "Seconds between stats");
@@ -68,7 +117,11 @@ int main(int argc, char** argv) {
     FLAGS_num_clients = numCores;
   }
 
-  // Initialize a client per number of threads specified
+  std::shared_ptr<folly::ShmPollerService> shmPollerService;
+  if (FLAGS_transport == "shm") {
+    shmPollerService = makeShmPollerService();
+  }
+
   QPSStats stats;
   std::vector<std::thread> threads;
   std::vector<std::shared_ptr<folly::EventBase>> evbs;
@@ -76,7 +129,6 @@ int main(int argc, char** argv) {
     auto evb = std::make_shared<folly::EventBase>();
     evbs.push_back(evb);
     threads.emplace_back([&, evb = std::move(evb)]() {
-      // Create Thrift Async Client
       folly::SocketAddress addr;
       if (!FLAGS_unix_socket_path.empty()) {
         LOG(INFO) << "Connecting to " << FLAGS_unix_socket_path;
@@ -86,7 +138,7 @@ int main(int argc, char** argv) {
         addr.setFromHostPort(FLAGS_host, FLAGS_port);
       }
       auto client = newClient<StreamBenchmarkAsyncClient>(
-          evb.get(), addr, FLAGS_transport);
+          evb.get(), addr, FLAGS_transport, false, shmPollerService.get());
 
       // Create the Operations and their Discrete Distributions
       // Every time a new operation is added, the distribution needs to

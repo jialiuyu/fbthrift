@@ -22,6 +22,7 @@
 #include <folly/io/async/BusyPollSharedMemoryTransport.h>
 #include <folly/io/async/BusyPollShmHandshake.h>
 #include <folly/io/async/EventBase.h>
+#include <folly/io/async/ShmPollerService.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 #include <thrift/lib/cpp2/async/HeaderClientChannel.h>
 #include <thrift/lib/cpp2/async/RocketClientChannel.h>
@@ -78,15 +79,26 @@ static std::unique_ptr<AsyncClient> newRocketClient(
 
 template <typename AsyncClient>
 static std::unique_ptr<AsyncClient> newShmClient(
-    folly::EventBase* evb, const folly::SocketAddress& addr) {
-  // 1. Connect via Unix domain socket (for handshake only, no FD passing needed)
+    folly::EventBase* evb,
+    const folly::SocketAddress& addr,
+    folly::ShmPollerService* pollerService = nullptr) {
   auto sock = apache::thrift::perf::getSocket(evb, addr, false);
-  // 2. Perform shared memory handshake (exchange region names + GQM names)
+
+  if (pollerService) {
+    uint16_t connId = pollerService->allocateConnId();
+    auto hsResult = folly::shmHandshakeClientShared(
+        evb, sock.get(), connId);
+    auto transport = folly::BusyPollSharedMemoryTransport::createShared(
+        evb, pollerService, connId);
+    pollerService->registerTransport(connId, transport.get(), evb);
+    auto chan = RocketClientChannel::newChannel(
+        folly::AsyncTransport::UniquePtr(transport.release()));
+    return std::make_unique<AsyncClient>(std::move(chan));
+  }
+
+  // Legacy per-connection mode
   folly::BusyPollSharedMemoryTransport::Config shmConfig;
-  shmConfig.pollingMode =
-      folly::BusyPollSharedMemoryTransport::PollingMode::ADAPTIVE;
   auto shmResult = folly::shmHandshakeClient(evb, sock.get(), shmConfig);
-  // 3. Create BusyPollSharedMemoryTransport with GQM queues
   auto transport = folly::BusyPollSharedMemoryTransport::create(
       evb,
       std::move(shmResult.writeRegion),
@@ -94,7 +106,6 @@ static std::unique_ptr<AsyncClient> newShmClient(
       std::move(shmResult.gqmWrite),
       std::move(shmResult.gqmRead),
       shmConfig);
-  // 4. Wrap with RocketClientChannel
   auto chan = RocketClientChannel::newChannel(
       folly::AsyncTransport::UniquePtr(transport.release()));
   return std::make_unique<AsyncClient>(std::move(chan));
@@ -105,7 +116,8 @@ static std::unique_ptr<AsyncClient> newClient(
     folly::EventBase* evb,
     const folly::SocketAddress& addr,
     folly::StringPiece transport,
-    bool encrypted = false) {
+    bool encrypted = false,
+    folly::ShmPollerService* pollerService = nullptr) {
   if (transport == "header") {
     return newHeaderClient<AsyncClient>(evb, addr);
   }
@@ -116,7 +128,7 @@ static std::unique_ptr<AsyncClient> newClient(
     return newHTTP2Client<AsyncClient>(evb, addr, encrypted);
   }
   if (transport == "shm") {
-    return newShmClient<AsyncClient>(evb, addr);
+    return newShmClient<AsyncClient>(evb, addr, pollerService);
   }
   return nullptr;
 }
@@ -138,11 +150,12 @@ class ConnectionThread : public folly::ScopedEventBaseThread {
   std::shared_ptr<AsyncClient> newSyncClient(
       const folly::SocketAddress& addr,
       folly::StringPiece transport,
-      bool encrypted = false) {
+      bool encrypted = false,
+      folly::ShmPollerService* pollerService = nullptr) {
     DCHECK(connection_ == nullptr);
     getEventBase()->runInEventBaseThreadAndWait([&]() {
-      connection_ =
-          newClient<AsyncClient>(getEventBase(), addr, transport, encrypted);
+      connection_ = newClient<AsyncClient>(
+          getEventBase(), addr, transport, encrypted, pollerService);
     });
     return connection_;
   }
