@@ -1,8 +1,10 @@
 *~
 
-.vscode
+.vscode/
+.idea/
 .github/*
 .claude
+.DS_Store
 
 # autoreconf artifacts
 Makefile.in
@@ -54,3 +56,11 @@ cmake_install.cmake
 /build/thrift
 /compile_commands.json
 /thrift/lib/java/**/target
+/build/CMakeFiles
+
+# Compilation artifacts
+**/*.so
+**/*.dylib
+**/*.o.d
+compile_commands.json
+cmake-build-*/

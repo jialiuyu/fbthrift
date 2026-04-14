@@ -102,15 +102,9 @@ int main(int argc, char** argv) {
   server->setNumCPUWorkerThreads(FLAGS_cpu_threads);
   server->setInterface(cpp2PFac);
 
-  // Enable shared memory transport if requested
   if (FLAGS_shm) {
     server->setUseShmTransport(true);
     LOG(INFO) << "Shared memory transport with busy-poll enabled";
-    // SHM requires Unix domain socket for FD passing
-    if (FLAGS_unix_socket_path.empty()) {
-      FLAGS_unix_socket_path = "/tmp/thrift_shm_benchmark";
-      LOG(INFO) << "Auto-setting Unix socket path: " << FLAGS_unix_socket_path;
-    }
   }
 
   server->addRoutingHandler(createHTTP2RoutingHandler(server));
