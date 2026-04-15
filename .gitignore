@@ -54,6 +54,7 @@ Makefile
 cmake_install.cmake
 /build/bin
 /build/thrift
+/thrift/perf/cpp2/build/
 /compile_commands.json
 /thrift/lib/java/**/target
 /build/CMakeFiles

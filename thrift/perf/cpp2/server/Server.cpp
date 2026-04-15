@@ -16,7 +16,10 @@
 
 #include <glog/logging.h>
 
+#include <cerrno>
+#include <cstring>
 #include <fcntl.h>
+#include <stdexcept>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -28,9 +31,16 @@
 #include <folly/portability/GFlags.h>
 #include <folly/system/HardwareConcurrency.h>
 
+#if __has_include(<proxygen/httpserver/HTTPServerOptions.h>) && \
+    __has_include(<thrift/lib/cpp2/transport/http2/common/HTTP2RoutingHandler.h>)
 #include <proxygen/httpserver/HTTPServerOptions.h>
-#include <thrift/lib/cpp2/server/ThriftServer.h>
 #include <thrift/lib/cpp2/transport/http2/common/HTTP2RoutingHandler.h>
+#define PERF_CPP2_HAVE_HTTP2 1
+#else
+#define PERF_CPP2_HAVE_HTTP2 0
+#endif
+
+#include <thrift/lib/cpp2/server/ThriftServer.h>
 #include <thrift/perf/cpp2/server/BenchmarkHandler.h>
 #include <thrift/perf/cpp2/util/QPSStats.h>
 
@@ -51,17 +61,18 @@ static constexpr size_t kShmDataRegionSize = 4 * 1024 * 1024;    // per-connecti
 static void* mmapDeviceFile(const char* path, size_t size) {
   int fd = ::open(path, O_RDWR);
   if (fd < 0) {
-    LOG(WARNING) << "Cannot open CXL device " << path << ": "
-                 << strerror(errno) << ", falling back to anonymous mmap";
-    void* ptr = ::mmap(
-        nullptr, size, PROT_READ | PROT_WRITE,
-        MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    CHECK(ptr != MAP_FAILED) << "anonymous mmap failed: " << strerror(errno);
-    return ptr;
+    throw std::runtime_error(
+        std::string("Cannot open CXL device ") + path + ": " +
+        std::strerror(errno));
   }
   void* ptr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  int savedErrno = errno;
   ::close(fd);
-  CHECK(ptr != MAP_FAILED) << "mmap " << path << " failed: " << strerror(errno);
+  if (ptr == MAP_FAILED) {
+    throw std::runtime_error(
+        std::string("mmap failed for CXL device ") + path + ": " +
+        std::strerror(savedErrno));
+  }
   return ptr;
 }
 
@@ -70,13 +81,15 @@ DEFINE_int32(cpu_threads, 0, "Number of CPU threads (0 means number of cores)");
 DEFINE_int32(stats_interval_sec, 1, "Seconds between stats");
 DEFINE_int32(terminate_sec, 0, "How long to run server (0 means forever)");
 
-using apache::thrift::HTTP2RoutingHandler;
 using apache::thrift::ThriftServer;
 using apache::thrift::ThriftServerAsyncProcessorFactory;
 using facebook::thrift::benchmarks::BenchmarkHandler;
 using facebook::thrift::benchmarks::QPSStats;
-using proxygen::HTTPServerOptions;
 using std::thread;
+
+#if PERF_CPP2_HAVE_HTTP2
+using apache::thrift::HTTP2RoutingHandler;
+using proxygen::HTTPServerOptions;
 
 std::unique_ptr<HTTP2RoutingHandler> createHTTP2RoutingHandler(
     std::shared_ptr<ThriftServer> server) {
@@ -87,6 +100,7 @@ std::unique_ptr<HTTP2RoutingHandler> createHTTP2RoutingHandler(
   return std::make_unique<HTTP2RoutingHandler>(
       std::move(h2_options), server->getThriftProcessor(), *server);
 }
+#endif
 
 int main(int argc, char** argv) {
   const folly::Init init(&argc, &argv);
@@ -115,17 +129,11 @@ int main(int argc, char** argv) {
     addr.setFromPath(FLAGS_unix_socket_path);
     sock->bind(addr);
     server->useExistingSocket(std::move(sock));
-    LOG(INFO) << "Listening on " << FLAGS_unix_socket_path;
-  } else if (FLAGS_shm) {
-    // SHM mode requires Unix domain socket - auto-create one
-    folly::AsyncServerSocket::UniquePtr sock{new folly::AsyncServerSocket};
-    folly::SocketAddress addr;
-    addr.setFromPath("/tmp/thrift_shm_benchmark");
-    sock->bind(addr);
-    server->useExistingSocket(std::move(sock));
-    LOG(INFO) << "SHM mode: Listening on /tmp/thrift_shm_benchmark";
+    LOG(INFO) << "Listening on bootstrap UDS " << FLAGS_unix_socket_path;
   } else {
-    LOG(INFO) << "Listening on port " << FLAGS_port;
+    LOG(INFO) << (FLAGS_shm ? "SHM mode: Listening on bootstrap TCP port "
+                            : "Listening on port ")
+              << FLAGS_port;
     server->setPort(FLAGS_port);
   }
   server->setNumIOWorkerThreads(FLAGS_io_threads);
@@ -154,7 +162,11 @@ int main(int argc, char** argv) {
               << " bytes each), ShmPollerService started";
   }
 
+#if PERF_CPP2_HAVE_HTTP2
   server->addRoutingHandler(createHTTP2RoutingHandler(server));
+#else
+  LOG(WARNING) << "HTTP/2 support disabled: proxygen/http2 headers not found";
+#endif
 
   thread logger([&] {
     int32_t elapsedTimeSec = 0;

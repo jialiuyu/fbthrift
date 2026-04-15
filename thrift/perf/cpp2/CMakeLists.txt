@@ -19,6 +19,24 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(DEFINED ENV{PERF_CPP2_GFLAGS_INCLUDE_DIR} AND
+   NOT "$ENV{PERF_CPP2_GFLAGS_INCLUDE_DIR}" STREQUAL "")
+  include_directories(BEFORE SYSTEM "$ENV{PERF_CPP2_GFLAGS_INCLUDE_DIR}")
+endif()
+
+if(DEFINED ENV{PERF_CPP2_GLOG_INCLUDE_DIR} AND
+   NOT "$ENV{PERF_CPP2_GLOG_INCLUDE_DIR}" STREQUAL "")
+  include_directories(BEFORE SYSTEM "$ENV{PERF_CPP2_GLOG_INCLUDE_DIR}")
+endif()
+
+if(EXISTS "/opt/homebrew/opt/libsodium/lib")
+  link_directories("/opt/homebrew/opt/libsodium/lib")
+endif()
+
+if(EXISTS "/opt/homebrew/opt/icu4c/lib")
+  link_directories("/opt/homebrew/opt/icu4c/lib")
+endif()
+
 # ---------------------------------------------------------------------------
 # Source tree roots
 # ---------------------------------------------------------------------------

@@ -297,7 +297,7 @@ class BuildOptions(object):
                 # Try extra hard to find openssl, needed with homebrew on macOS
                 if found and p.startswith("openssl"):
                     candidate = homebrew_package_prefix("openssl@1.1")
-                    if os.path.exists(candidate):
+                    if candidate and os.path.exists(candidate):
                         os.environ["OPENSSL_ROOT_DIR"] = candidate
                         env["OPENSSL_ROOT_DIR"] = os.environ["OPENSSL_ROOT_DIR"]
 

@@ -284,9 +284,12 @@ std::shared_ptr<folly::AsyncTransport> Cpp2Worker::createThriftTransport(
             getEventBase(), sock.get(), connId);
         auto shmTransport =
             folly::BusyPollSharedMemoryTransport::createShared(
-                getEventBase(), pollerService.get(), connId);
+                getEventBase(),
+                pollerService.get(),
+                hsResult.localConnId,
+                hsResult.peerConnId);
         pollerService->registerTransport(
-            connId, shmTransport.get(), getEventBase());
+            hsResult.localConnId, shmTransport.get(), getEventBase());
         return apache::thrift::transport::detail::convertToShared(
             folly::AsyncTransport::UniquePtr(shmTransport.release()));
       } else {
@@ -310,8 +313,8 @@ std::shared_ptr<folly::AsyncTransport> Cpp2Worker::createThriftTransport(
             folly::AsyncTransport::UniquePtr(shmTransport.release()));
       }
     } catch (const std::exception& ex) {
-      FB_LOG(ERROR) << "SHM handshake failed, falling back to TCP: "
-                    << ex.what();
+      LOG(ERROR) << "SHM handshake failed, falling back to TCP: "
+                 << ex.what();
       // Fall through to regular TCP transport
     }
   }

@@ -21,13 +21,9 @@ WITH_PKGCONFIG=ON
 HAVE_TR1_UNORDERED_MAP=OFF
 HAVE_TR1_UNORDERED_SET=OFF
 
-[homebrew]
-glog
-
 # on ubuntu glog brings in liblzma-dev, which in turn breaks watchman tests
 [debs.not(distro=ubuntu)]
 libgoogle-glog-dev
 
 [rpms.distro=fedora]
 glog-devel
-

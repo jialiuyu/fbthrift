@@ -29,15 +29,25 @@
 #include <thrift/lib/cpp2/server/ThriftServer.h>
 #include <thrift/lib/cpp2/transport/core/ThriftClient.h>
 #include <thrift/lib/cpp2/transport/core/testutil/ServerConfigsMock.h>
+
+#if __has_include(<thrift/lib/cpp2/transport/http2/client/H2ClientConnection.h>) && \
+    __has_include(<proxygen/lib/http/codec/HTTPCodec.h>)
 #include <thrift/lib/cpp2/transport/http2/client/H2ClientConnection.h>
+#define PERF_CPP2_HAVE_HTTP2 1
+#else
+#define PERF_CPP2_HAVE_HTTP2 0
+#endif
 
 using apache::thrift::ClientConnectionIf;
-using apache::thrift::H2ClientConnection;
 using apache::thrift::HeaderClientChannel;
 using apache::thrift::RocketClientChannel;
 using apache::thrift::ThriftClient;
 using apache::thrift::ThriftServerAsyncProcessorFactory;
 using apache::thrift::server::ServerConfigsMock;
+
+#if PERF_CPP2_HAVE_HTTP2
+using apache::thrift::H2ClientConnection;
+#endif
 
 namespace apache::thrift::perf {
 folly::AsyncSocket::UniquePtr getSocket(
@@ -59,6 +69,7 @@ static std::unique_ptr<AsyncClient> newHeaderClient(
 template <typename AsyncClient>
 static std::unique_ptr<AsyncClient> newHTTP2Client(
     folly::EventBase* evb, const folly::SocketAddress& addr, bool encrypted) {
+#if PERF_CPP2_HAVE_HTTP2
   auto sock = apache::thrift::perf::getSocket(evb, addr, encrypted, {"h2"});
   std::shared_ptr<ClientConnectionIf> conn =
       H2ClientConnection::newHTTP2Connection(std::move(sock));
@@ -66,6 +77,13 @@ static std::unique_ptr<AsyncClient> newHTTP2Client(
   client->setProtocolId(apache::thrift::protocol::T_COMPACT_PROTOCOL);
   client->setTimeout(500);
   return std::make_unique<AsyncClient>(std::move(client));
+#else
+  (void)evb;
+  (void)addr;
+  (void)encrypted;
+  throw std::runtime_error(
+      "HTTP/2 transport is unavailable because proxygen/http2 headers are missing");
+#endif
 }
 
 template <typename AsyncClient>
@@ -89,8 +107,12 @@ static std::unique_ptr<AsyncClient> newShmClient(
     auto hsResult = folly::shmHandshakeClientShared(
         evb, sock.get(), connId);
     auto transport = folly::BusyPollSharedMemoryTransport::createShared(
-        evb, pollerService, connId);
-    pollerService->registerTransport(connId, transport.get(), evb);
+        evb,
+        pollerService,
+        hsResult.localConnId,
+        hsResult.peerConnId);
+    pollerService->registerTransport(
+        hsResult.localConnId, transport.get(), evb);
     auto chan = RocketClientChannel::newChannel(
         folly::AsyncTransport::UniquePtr(transport.release()));
     return std::make_unique<AsyncClient>(std::move(chan));

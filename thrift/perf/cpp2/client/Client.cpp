@@ -15,7 +15,10 @@
  */
 
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
 #include <fcntl.h>
+#include <stdexcept>
 #include <sys/mman.h>
 #include <sys/stat.h>
 
@@ -51,17 +54,18 @@ static constexpr size_t kShmDataRegionSize = 4 * 1024 * 1024;    // per-connecti
 static void* mmapDeviceFile(const char* path, size_t size) {
   int fd = ::open(path, O_RDWR);
   if (fd < 0) {
-    LOG(WARNING) << "Cannot open CXL device " << path << ": "
-                 << strerror(errno) << ", falling back to anonymous mmap";
-    void* ptr = ::mmap(
-        nullptr, size, PROT_READ | PROT_WRITE,
-        MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    CHECK(ptr != MAP_FAILED) << "anonymous mmap failed: " << strerror(errno);
-    return ptr;
+    throw std::runtime_error(
+        std::string("Cannot open CXL device ") + path + ": " +
+        std::strerror(errno));
   }
   void* ptr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  int savedErrno = errno;
   ::close(fd);
-  CHECK(ptr != MAP_FAILED) << "mmap " << path << " failed: " << strerror(errno);
+  if (ptr == MAP_FAILED) {
+    throw std::runtime_error(
+        std::string("mmap failed for CXL device ") + path + ": " +
+        std::strerror(savedErrno));
+  }
   return ptr;
 }
 
@@ -131,10 +135,13 @@ int main(int argc, char** argv) {
     threads.emplace_back([&, evb = std::move(evb)]() {
       folly::SocketAddress addr;
       if (!FLAGS_unix_socket_path.empty()) {
-        LOG(INFO) << "Connecting to " << FLAGS_unix_socket_path;
+        LOG(INFO) << "Connecting to bootstrap UDS " << FLAGS_unix_socket_path;
         addr.setFromPath(FLAGS_unix_socket_path);
       } else {
-        LOG(INFO) << "Connecting [" << FLAGS_host << "]:" << FLAGS_port;
+        LOG(INFO) << (FLAGS_transport == "shm"
+                          ? "Connecting to SHM bootstrap TCP "
+                          : "Connecting ")
+                  << "[" << FLAGS_host << "]:" << FLAGS_port;
         addr.setFromHostPort(FLAGS_host, FLAGS_port);
       }
       auto client = newClient<StreamBenchmarkAsyncClient>(
