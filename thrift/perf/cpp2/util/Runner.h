@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <random>
 #include <glog/logging.h>
 #include <folly/init/Init.h>
@@ -82,7 +83,8 @@ class LoadCallback : public RequestCallbackWithValidator {
  public:
   LoadCallback(
       Runner<AsyncClient>* runner, Operation<AsyncClient>* ops, OP_TYPE op)
-      : runner_(runner), ops_(ops), op_(op) {}
+      : runner_(runner), ops_(ops), op_(op),
+        startTime_(std::chrono::steady_clock::now()) {}
 
   void setIsOneway() { isOneway_ = true; }
 
@@ -97,7 +99,9 @@ class LoadCallback : public RequestCallbackWithValidator {
     if (validator) {
       validator(rstate);
     }
+    auto latencyNs = calcLatency();
     ops_->asyncReceived(op_, std::move(rstate));
+    ops_->recordLatency(op_, latencyNs);
     runner_->finishCall();
   }
   void requestError(ClientReceiveState&& rstate) override {
@@ -106,8 +110,16 @@ class LoadCallback : public RequestCallbackWithValidator {
   }
 
  private:
+  uint64_t calcLatency() const {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - startTime_)
+            .count());
+  }
+
   Runner<AsyncClient>* runner_;
   Operation<AsyncClient>* ops_;
   OP_TYPE op_;
   bool isOneway_{false};
+  std::chrono::steady_clock::time_point startTime_;
 };

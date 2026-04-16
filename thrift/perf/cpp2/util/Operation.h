@@ -60,8 +60,8 @@ class Operation {
                 stats, FLAGS_chunk_size)),
 #endif
         semifuture_sum_(std::make_unique<SemiFutureSum<AsyncClient>>(stats)),
-        co_sum_(std::make_unique<CoSum<AsyncClient>>(stats)) {
-  }
+        co_sum_(std::make_unique<CoSum<AsyncClient>>(stats)),
+        stats_(stats) {}
   ~Operation() = default;
 
   int32_t outstandingOps() { return outstanding_ops_; }
@@ -174,6 +174,42 @@ class Operation {
     }
   }
 
+  void recordLatency(OP_TYPE op, uint64_t latencyNs) {
+    const char* name = nullptr;
+    switch (op) {
+      case NOOP:
+        name = "noop";
+        break;
+      case SUM:
+        name = "sum";
+        break;
+      case TIMEOUT:
+        name = "timeout_success";
+        break;
+#ifdef STREAM_PERF_TEST
+      case DOWNLOAD:
+        name = "download";
+        break;
+      case UPLOAD:
+        name = "upload";
+        break;
+      case STREAM:
+        name = "stream";
+        break;
+#endif
+      case SEMIFUTURE_SUM:
+        name = "semifuture_sum";
+        break;
+      case CO_SUM:
+        name = "co_sum";
+        break;
+      default:
+        return;
+    }
+    std::string nameStr(name);
+    stats_->recordLatency(nameStr, latencyNs);
+  }
+
  private:
   std::unique_ptr<AsyncClient> client_;
   std::unique_ptr<Noop<AsyncClient>> noop_;
@@ -187,5 +223,6 @@ class Operation {
   std::unique_ptr<SemiFutureSum<AsyncClient>> semifuture_sum_;
   std::unique_ptr<CoSum<AsyncClient>> co_sum_;
 
+  QPSStats* stats_;
   int32_t outstanding_ops_{0};
 };
