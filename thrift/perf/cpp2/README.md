@@ -15,6 +15,9 @@ By default, the server will calculate the number of cores in the
 machine and it will set the number of IOThreads and CPU threads
 based on that. To manually change that, use the integer flags.
 
+If you want the reported QPS to exclude startup noise, set
+`--warmup_sec=<seconds>` so the benchmark warms up before logging stats.
+
 In general, the server should be ready to go as is.
 
 ## Setting up the Client
@@ -26,6 +29,9 @@ Read about the different flags in the client:
 Using this Client, it is possible to specify the number of Clients
 that the machine will create. This will create a Client on its
 own thread (to maximize throughput).
+
+If you want the reported QPS to exclude startup noise, set
+`--warmup_sec=<seconds>` so the benchmark warms up before logging stats.
 
 ### Async
 
@@ -80,15 +86,18 @@ On both on the client and the server side, the output will look like the followi
 `./client --host="IP" --transport="header" --async --num_clients=100 --noop_weight=1 --sum_weight=1`
 
 ```
-| QPS: 1.575878e+06 | Max QPS: 1.575878e+06 | Total Queries: 5.590453e+06 | Operation: sum
-| QPS: 1.578935e+06 | Max QPS: 1.578935e+06 | Total Queries: 5.595629e+06 | Operation: noop
+| Warmup: 1/3 sec
+| Warmup: 2/3 sec
+| Warmup complete, starting QPS measurement
+| QPS: 1.575878e+06 | Max QPS: 1.575878e+06 | Avg QPS: 1.575878e+06 | Total Queries: 5.590453e+06 | Operation: sum
+| QPS: 1.578935e+06 | Max QPS: 1.578935e+06 | Avg QPS: 1.578935e+06 | Total Queries: 5.595629e+06 | Operation: noop
 ...
-| TOTAL QPS: 3.154813e+06
+| TOTAL QPS: 3.154813e+06 | TOTAL Max QPS: 3.154813e+06 | TOTAL Avg QPS: 3.154813e+06
 ```
 
 This means that the current total throughput is 3.15MQPS, plus, it
-breaks down the QPS per operation type to get better insights on the
-operations that the client/server is preforming.
+breaks down the real-time, max, and average QPS per operation type to get
+better insights on the operations that the client/server is preforming.
 
 ## Timeout testing
 

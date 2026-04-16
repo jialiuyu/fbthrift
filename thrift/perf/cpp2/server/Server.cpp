@@ -79,6 +79,7 @@ static void* mmapDeviceFile(const char* path, size_t size) {
 DEFINE_int32(io_threads, 0, "Number of IO threads (0 means number of cores)");
 DEFINE_int32(cpu_threads, 0, "Number of CPU threads (0 means number of cores)");
 DEFINE_int32(stats_interval_sec, 1, "Seconds between stats");
+DEFINE_int32(warmup_sec, 0, "Seconds to warm up before QPS stats are reported");
 DEFINE_int32(terminate_sec, 0, "How long to run server (0 means forever)");
 
 using apache::thrift::ThriftServer;
@@ -115,7 +116,7 @@ int main(int argc, char** argv) {
   LOG(INFO) << "Using " << FLAGS_io_threads << " IO threads";
   LOG(INFO) << "Using " << FLAGS_cpu_threads << " CPU threads";
 
-  QPSStats stats;
+  QPSStats stats(FLAGS_warmup_sec);
 
   auto handler = std::make_shared<BenchmarkHandler>(&stats);
   auto cpp2PFac =

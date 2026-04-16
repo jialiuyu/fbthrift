@@ -89,6 +89,7 @@ static std::shared_ptr<folly::ShmPollerService> makeShmPollerService() {
 
 // General Settings
 DEFINE_int32(stats_interval_sec, 1, "Seconds between stats");
+DEFINE_int32(warmup_sec, 0, "Seconds to warm up before QPS stats are reported");
 DEFINE_int32(terminate_sec, 0, "How long to run client (0 means forever)");
 
 // Operations Settings
@@ -126,7 +127,7 @@ int main(int argc, char** argv) {
     shmPollerService = makeShmPollerService();
   }
 
-  QPSStats stats;
+  QPSStats stats(FLAGS_warmup_sec);
   std::vector<std::thread> threads;
   std::vector<std::shared_ptr<folly::EventBase>> evbs;
   for (int i = 0; i < FLAGS_num_clients; ++i) {
