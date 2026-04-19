@@ -206,8 +206,7 @@ class Operation {
       default:
         return;
     }
-    std::string nameStr(name);
-    stats_->recordLatency(nameStr, latencyNs);
+    stats_->recordLatency(name, latencyNs);
   }
 
  private:

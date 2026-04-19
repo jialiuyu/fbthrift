@@ -139,8 +139,15 @@ class QPSStats {
 
   void add(std::string& name, uint32_t sz) { (*counters_[name]) += sz; }
 
-  void recordLatency(std::string& name, uint64_t latencyNs) {
-    counters_[name]->recordLatency(latencyNs);
+  void recordLatency(const std::string& name, uint64_t latencyNs) {
+    auto it = counters_.find(name);
+    if (it != counters_.end()) {
+      it->second->recordLatency(latencyNs);
+    }
+  }
+
+  void recordLatency(const char* name, uint64_t latencyNs) {
+    recordLatency(std::string(name), latencyNs);
   }
 
  private:

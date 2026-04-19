@@ -203,6 +203,61 @@ int main(int argc, char** argv) {
     std::this_thread::sleep_for(std::chrono::seconds(sleepTimeSec));
     stats.printStats(sleepTimeSec);
     elapsedTimeSec += sleepTimeSec;
+
+    // Print SHM diagnostic stats
+    if (shmPollerService) {
+      const auto& d = shmPollerService->diagStats();
+      uint64_t dCount = d.dispatchCount.load(std::memory_order_relaxed);
+      uint64_t dSum = d.dispatchSumNs.load(std::memory_order_relaxed);
+      uint64_t popOk = d.popSuccessCount.load(std::memory_order_relaxed);
+      uint64_t popEmpty = d.popEmptyCount.load(std::memory_order_relaxed);
+      uint64_t popYield = d.popYieldCount.load(std::memory_order_relaxed);
+      uint64_t wCalls = d.writeCallCount.load(std::memory_order_relaxed);
+      uint64_t wSum = d.writeSumNs.load(std::memory_order_relaxed);
+      uint64_t wFcYields = d.writeFlowControlYields.load(
+          std::memory_order_relaxed);
+      uint64_t sLocks = d.sharedLockCount.load(std::memory_order_relaxed);
+      uint64_t ioBufs = d.ioBufAllocCount.load(std::memory_order_relaxed);
+
+      double avgDispatchUs =
+          dCount > 0 ? static_cast<double>(dSum) / dCount / 1000.0 : 0;
+      double avgWriteUs =
+          wCalls > 0 ? static_cast<double>(wSum) / wCalls / 1000.0 : 0;
+      double emptyRatio =
+          (popOk + popEmpty) > 0
+              ? static_cast<double>(popEmpty) / (popOk + popEmpty) * 100
+              : 0;
+
+      LOG(INFO) << " | [SHM Diag] dispatch_avg(us): " << avgDispatchUs
+                << " | write_avg(us): " << avgWriteUs
+                << " | pop_empty_ratio(%): " << emptyRatio
+                << " | pop_yields: " << popYield
+                << " | write_fc_yields: " << wFcYields
+                << " | shared_locks: " << sLocks
+                << " | iobuf_allocs: " << ioBufs;
+
+      // Dispatch latency histogram (P50/P90/P99)
+      if (dCount > 0) {
+        uint64_t cumulative = 0;
+        uint64_t p50Target = dCount * 50 / 100;
+        uint64_t p90Target = dCount * 90 / 100;
+        uint64_t p99Target = dCount * 99 / 100;
+        double p50 = 0, p90 = 0, p99 = 0;
+        for (int i = 0; i < folly::ShmPollerService::DiagStats::kDispatchNumBuckets; ++i) {
+          cumulative += d.dispatchBuckets_[i].load(std::memory_order_relaxed);
+          double upperUs = (i == 0)
+              ? (1ULL << folly::ShmPollerService::DiagStats::kDispatchBucketOffset) / 1000.0
+              : (1ULL << (i + folly::ShmPollerService::DiagStats::kDispatchBucketOffset)) / 1000.0;
+          if (p50 == 0 && cumulative >= p50Target) p50 = upperUs;
+          if (p90 == 0 && cumulative >= p90Target) p90 = upperUs;
+          if (p99 == 0 && cumulative >= p99Target) p99 = upperUs;
+        }
+        LOG(INFO) << " | [SHM Diag] dispatch_P50(us): " << p50
+                  << " | dispatch_P90(us): " << p90
+                  << " | dispatch_P99(us): " << p99;
+      }
+    }
+
     if (elapsedTimeSec >= FLAGS_terminate_sec) {
       break;
     }
