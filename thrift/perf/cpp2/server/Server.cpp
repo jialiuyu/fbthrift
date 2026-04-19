@@ -27,6 +27,7 @@
 
 #include <folly/init/Init.h>
 #include <folly/io/async/ImportedMemoryProvider.h>
+#include <folly/io/async/PosixShmProvider.h>
 #include <folly/io/async/ShmPollerService.h>
 #include <folly/portability/GFlags.h>
 #include <folly/system/HardwareConcurrency.h>
@@ -49,6 +50,10 @@ DEFINE_string(
     unix_socket_path, "", "Unix socket to listen on, supersedes port");
 DEFINE_bool(
     shm, false, "Use shared memory transport with busy-poll mode");
+DEFINE_bool(
+    posix_shm,
+    false,
+    "Use POSIX shm_open instead of CXL device files (requires --shm)");
 
 // CXL memory device files (stub paths — replace with actual device paths)
 // memfile0: server→client direction (server writes, client reads)
@@ -144,23 +149,52 @@ int main(int argc, char** argv) {
   if (FLAGS_shm) {
     server->setUseShmTransport(true);
 
-    void* s2cMem = mmapDeviceFile(kShmDevFileS2C, kShmPoolSize);
-    void* c2sMem = mmapDeviceFile(kShmDevFileC2S, kShmPoolSize);
-
     auto provider = std::make_shared<folly::ImportedMemoryProvider>();
-    provider->registerPool("s2c", s2cMem, kShmPoolSize);
-    provider->registerPool("c2s", c2sMem, kShmPoolSize);
 
-    auto pollerService = std::make_shared<folly::ShmPollerService>();
-    pollerService->initFromProvider(*provider, "s2c", "c2s", true);
-    pollerService->startPollers();
+    if (FLAGS_posix_shm) {
+      // POSIX SHM path — works without CXL hardware
+      auto posixProvider = std::make_shared<folly::PosixShmProvider>();
+      auto s2cRegion = posixProvider->create("/fbthrift_shm_s2c", kShmPoolSize);
+      auto c2sRegion = posixProvider->create("/fbthrift_shm_c2s", kShmPoolSize);
+      provider->registerPool("s2c", s2cRegion->data(), s2cRegion->size());
+      provider->registerPool("c2s", c2sRegion->data(), c2sRegion->size());
 
-    server->setShmMemoryProvider(std::move(provider));
-    server->setShmPollerService(std::move(pollerService));
+      // Hold region ownership for the server lifetime
+      auto pollerService = std::make_shared<folly::ShmPollerService>();
+      pollerService->initFromProvider(*provider, "s2c", "c2s", true);
+      pollerService->startPollers();
 
-    LOG(INFO) << "SHM mode: CXL device files " << kShmDevFileS2C
-              << " / " << kShmDevFileC2S << " mapped (" << kShmPoolSize
-              << " bytes each), ShmPollerService started";
+      server->setShmMemoryProvider(std::move(provider));
+      server->setShmPollerService(std::move(pollerService));
+
+      // Keep regions alive by storing in the server's custom deleter context
+      // via a shared_ptr capture — the provider holds raw pointers from
+      // data()/size(), so we must keep the PosixShmRegion objects alive.
+      static auto sKeptS2C = std::move(s2cRegion);
+      static auto sKeptC2S = std::move(c2sRegion);
+
+      LOG(INFO) << "SHM mode: POSIX shm_open regions "
+                << "/fbthrift_shm_s2c / /fbthrift_shm_c2s mapped ("
+                << kShmPoolSize << " bytes each), ShmPollerService started";
+    } else {
+      // CXL device file path — original behavior
+      void* s2cMem = mmapDeviceFile(kShmDevFileS2C, kShmPoolSize);
+      void* c2sMem = mmapDeviceFile(kShmDevFileC2S, kShmPoolSize);
+
+      provider->registerPool("s2c", s2cMem, kShmPoolSize);
+      provider->registerPool("c2s", c2sMem, kShmPoolSize);
+
+      auto pollerService = std::make_shared<folly::ShmPollerService>();
+      pollerService->initFromProvider(*provider, "s2c", "c2s", true);
+      pollerService->startPollers();
+
+      server->setShmMemoryProvider(std::move(provider));
+      server->setShmPollerService(std::move(pollerService));
+
+      LOG(INFO) << "SHM mode: CXL device files " << kShmDevFileS2C
+                << " / " << kShmDevFileC2S << " mapped (" << kShmPoolSize
+                << " bytes each), ShmPollerService started";
+    }
   }
 
 #if PERF_CPP2_HAVE_HTTP2

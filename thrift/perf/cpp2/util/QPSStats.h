@@ -33,6 +33,14 @@ class QPSStats {
       : warmupSec_(std::max(0, warmupSec)),
         measurementStarted_(warmupSec_ == 0) {}
 
+  void setTransportLabel(const std::string& label) {
+    transportLabel_ = label;
+  }
+
+  void setOutputFormat(const std::string& format) {
+    outputFormat_ = format;
+  }
+
   void printStats(double secsSinceLastPrint) {
     if (!measurementStarted_) {
       elapsedSec_ += secsSinceLastPrint;
@@ -71,28 +79,50 @@ class QPSStats {
       bool hasLatency = snapshot.currentAvgLatencyUs > 0 ||
           snapshot.overallAvgLatencyUs > 0;
       if (hasLatency) {
-        LOG(INFO) << std::scientific
-                  << " | QPS: " << snapshot.currentQPS
-                  << " | Max QPS: " << snapshot.maxQPS
-                  << " | Avg QPS: " << snapshot.avgQPS
-                  << " | (RT)avg(us): " << snapshot.currentAvgLatencyUs
-                  << " | (RT)P99(us): " << snapshot.currentP99LatencyUs
-                  << " | (Avg)avg(us): " << snapshot.overallAvgLatencyUs
-                  << " | (Avg)P99(us): " << snapshot.overallP99LatencyUs
-                  << " | Total Queries: " << snapshot.totalQueries
-                  << " | Operation: " << snapshot.name;
+        if (outputFormat_ == "csv") {
+          LOG(INFO) << "STATS_CSV," << transportLabel_
+                    << "," << snapshot.name
+                    << "," << snapshot.currentQPS
+                    << "," << snapshot.maxQPS
+                    << "," << snapshot.avgQPS
+                    << "," << snapshot.currentAvgLatencyUs
+                    << "," << snapshot.currentP99LatencyUs
+                    << "," << snapshot.overallAvgLatencyUs
+                    << "," << snapshot.overallP99LatencyUs
+                    << "," << snapshot.totalQueries;
+        } else {
+          LOG(INFO) << std::scientific
+                    << " | QPS: " << snapshot.currentQPS
+                    << " | Max QPS: " << snapshot.maxQPS
+                    << " | Avg QPS: " << snapshot.avgQPS
+                    << " | (RT)avg(us): " << snapshot.currentAvgLatencyUs
+                    << " | (RT)P99(us): " << snapshot.currentP99LatencyUs
+                    << " | (Avg)avg(us): " << snapshot.overallAvgLatencyUs
+                    << " | (Avg)P99(us): " << snapshot.overallP99LatencyUs
+                    << " | Total Queries: " << snapshot.totalQueries
+                    << " | Operation: " << snapshot.name;
+        }
         totalLatencySum += snapshot.currentAvgLatencyUs * snapshot.currentQPS;
         totalLatencyCount += snapshot.currentQPS;
         totalOverallLatencySum +=
             snapshot.overallAvgLatencyUs * snapshot.measuredQueries;
         totalOverallLatencyCount += snapshot.measuredQueries;
       } else {
-        LOG(INFO) << std::scientific
-                  << " | QPS: " << snapshot.currentQPS
-                  << " | Max QPS: " << snapshot.maxQPS
-                  << " | Avg QPS: " << snapshot.avgQPS
-                  << " | Total Queries: " << snapshot.totalQueries
-                  << " | Operation: " << snapshot.name;
+        if (outputFormat_ == "csv") {
+          LOG(INFO) << "STATS_CSV," << transportLabel_
+                    << "," << snapshot.name
+                    << "," << snapshot.currentQPS
+                    << "," << snapshot.maxQPS
+                    << "," << snapshot.avgQPS
+                    << ",,,,," << snapshot.totalQueries;
+        } else {
+          LOG(INFO) << std::scientific
+                    << " | QPS: " << snapshot.currentQPS
+                    << " | Max QPS: " << snapshot.maxQPS
+                    << " | Avg QPS: " << snapshot.avgQPS
+                    << " | Total Queries: " << snapshot.totalQueries
+                    << " | Operation: " << snapshot.name;
+        }
       }
     }
 
@@ -108,17 +138,37 @@ class QPSStats {
         : 0;
 
     if (totalAvgLatency > 0) {
-      LOG(INFO) << std::scientific
-                << " | TOTAL QPS: " << totalCurrentQPS
-                << " | TOTAL Max QPS: " << totalMaxQPS_
-                << " | TOTAL Avg QPS: " << totalAvgQPS
-                << " | TOTAL (RT)avg(us): " << totalAvgLatency
-                << " | TOTAL (Avg)avg(us): " << totalOverallAvgLatency;
+      if (outputFormat_ == "csv") {
+        LOG(INFO) << "STATS_CSV," << transportLabel_
+                  << ",TOTAL"
+                  << "," << totalCurrentQPS
+                  << "," << totalMaxQPS_
+                  << "," << totalAvgQPS
+                  << "," << totalAvgLatency
+                  << ",," << totalOverallAvgLatency
+                  << ",,";
+      } else {
+        LOG(INFO) << std::scientific
+                  << " | TOTAL QPS: " << totalCurrentQPS
+                  << " | TOTAL Max QPS: " << totalMaxQPS_
+                  << " | TOTAL Avg QPS: " << totalAvgQPS
+                  << " | TOTAL (RT)avg(us): " << totalAvgLatency
+                  << " | TOTAL (Avg)avg(us): " << totalOverallAvgLatency;
+      }
     } else {
-      LOG(INFO) << std::scientific
-                << " | TOTAL QPS: " << totalCurrentQPS
-                << " | TOTAL Max QPS: " << totalMaxQPS_
-                << " | TOTAL Avg QPS: " << totalAvgQPS;
+      if (outputFormat_ == "csv") {
+        LOG(INFO) << "STATS_CSV," << transportLabel_
+                  << ",TOTAL"
+                  << "," << totalCurrentQPS
+                  << "," << totalMaxQPS_
+                  << "," << totalAvgQPS
+                  << ",,,,,";
+      } else {
+        LOG(INFO) << std::scientific
+                  << " | TOTAL QPS: " << totalCurrentQPS
+                  << " | TOTAL Max QPS: " << totalMaxQPS_
+                  << " | TOTAL Avg QPS: " << totalAvgQPS;
+      }
     }
   }
 
@@ -158,6 +208,8 @@ class QPSStats {
   double totalMaxQPS_{0};
   int32_t warmupSec_{0};
   bool measurementStarted_{false};
+  std::string transportLabel_{"unknown"};
+  std::string outputFormat_{"text"};
 };
 
 } // namespace facebook::thrift::benchmarks

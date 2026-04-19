@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 
 #include <folly/io/async/ImportedMemoryProvider.h>
+#include <folly/io/async/PosixShmProvider.h>
 #include <folly/io/async/ShmPollerService.h>
 #include <folly/system/HardwareConcurrency.h>
 #include <thrift/perf/cpp2/if/gen-cpp2/StreamBenchmark.h>
@@ -43,6 +44,14 @@ DEFINE_string(
 // Client Settings
 DEFINE_int32(num_clients, 0, "Number of clients to use. (Default: 1 per core)");
 DEFINE_string(transport, "header", "Transport to use: header, rocket, http2, shm");
+DEFINE_bool(
+    posix_shm,
+    false,
+    "Use POSIX shm_open instead of CXL device files (requires --transport=shm)");
+DEFINE_string(
+    output_format,
+    "text",
+    "Stats output format: text (human-readable), csv (machine-parseable)");
 
 // CXL memory device files (stub paths — must match Server.cpp)
 // memfile0: server→client direction (server writes, client reads)
@@ -71,10 +80,34 @@ static void* mmapDeviceFile(const char* path, size_t size) {
 }
 
 static std::shared_ptr<folly::ShmPollerService> makeShmPollerService() {
+  auto provider = std::make_shared<folly::ImportedMemoryProvider>();
+
+  if (FLAGS_posix_shm) {
+    // POSIX SHM path — attach to server-created regions
+    auto posixProvider = std::make_shared<folly::PosixShmProvider>();
+    auto c2sRegion = posixProvider->import("/fbthrift_shm_c2s", kShmPoolSize);
+    auto s2cRegion = posixProvider->import("/fbthrift_shm_s2c", kShmPoolSize);
+    provider->registerPool("c2s", c2sRegion->data(), c2sRegion->size());
+    provider->registerPool("s2c", s2cRegion->data(), s2cRegion->size());
+
+    auto pollerService = std::make_shared<folly::ShmPollerService>();
+    pollerService->initFromProvider(*provider, "c2s", "s2c", false);
+    pollerService->startPollers();
+
+    // Hold region ownership for the client lifetime
+    static auto sKeptC2S = std::move(c2sRegion);
+    static auto sKeptS2C = std::move(s2cRegion);
+
+    LOG(INFO) << "SHM client: POSIX shm_open regions "
+              << "/fbthrift_shm_c2s / /fbthrift_shm_s2c mapped ("
+              << kShmPoolSize << " bytes each), ShmPollerService started";
+    return pollerService;
+  }
+
+  // CXL device file path — original behavior
   void* c2sMem = mmapDeviceFile(kShmDevFileC2S, kShmPoolSize);
   void* s2cMem = mmapDeviceFile(kShmDevFileS2C, kShmPoolSize);
 
-  auto provider = std::make_shared<folly::ImportedMemoryProvider>();
   provider->registerPool("c2s", c2sMem, kShmPoolSize);
   provider->registerPool("s2c", s2cMem, kShmPoolSize);
 
@@ -129,6 +162,8 @@ int main(int argc, char** argv) {
   }
 
   QPSStats stats(FLAGS_warmup_sec);
+  stats.setTransportLabel(FLAGS_transport);
+  stats.setOutputFormat(FLAGS_output_format);
   std::vector<std::thread> threads;
   std::vector<std::shared_ptr<folly::EventBase>> evbs;
   for (int i = 0; i < FLAGS_num_clients; ++i) {
@@ -355,6 +390,24 @@ int main(int argc, char** argv) {
                   << curShm.ioBufAllocCount - prevShm.ioBufAllocCount
                   << " | P50(us): " << p50 << " | P90(us): " << p90
                   << " | P99(us): " << p99;
+
+        // CSV output for SHM diag (machine-parseable)
+        if (FLAGS_output_format == "csv") {
+          LOG(INFO) << "SHM_DIAG_CSV," << FLAGS_transport
+                    << "," << avgDispatchUs
+                    << "," << avgWriteUs
+                    << "," << emptyRatio
+                    << "," << (curShm.popYieldCount - prevShm.popYieldCount)
+                    << "," << (curShm.writeFlowControlYields -
+                        prevShm.writeFlowControlYields)
+                    << "," << (curShm.writeTimeoutCount -
+                        prevShm.writeTimeoutCount)
+                    << "," << (curShm.sharedLockCount -
+                        prevShm.sharedLockCount)
+                    << "," << (curShm.ioBufAllocCount -
+                        prevShm.ioBufAllocCount)
+                    << "," << p50 << "," << p90 << "," << p99;
+        }
 
         prevShm = curShm;
       }
