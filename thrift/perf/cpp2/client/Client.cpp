@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <fcntl.h>
 #include <stdexcept>
@@ -191,77 +192,188 @@ int main(int argc, char** argv) {
   }
 
   // Closing connections
-  int32_t elapsedTimeSec = 0;
-  if (FLAGS_terminate_sec == 0) {
-    // Essentially infinite time.
-    FLAGS_terminate_sec = 100000000;
+  // === Stats reporting: uses wall-clock time for accurate QPS ===
+  //
+  // Bug fixes vs original:
+  //   1. Actual elapsed time (steady_clock) replaces intended sleep duration,
+  //      preventing QPS overestimation as stats overhead grows.
+  //   2. SHM diagnostic stats use per-interval deltas (previous snapshot
+  //      subtracted), not cumulative counters.
+  //   3. Stats collection runs on a separate thread; the main thread sleeps
+  //      and prints the latest snapshot without blocking client threads.
+  //   4. SHM diag output is consolidated into a single LOG(INFO) to reduce
+  //      glog global-lock contention.
+
+  // SHM diag delta tracking
+  struct ShmDiagSnapshot {
+    uint64_t dispatchCount{0};
+    uint64_t dispatchSumNs{0};
+    uint64_t popSuccessCount{0};
+    uint64_t popEmptyCount{0};
+    uint64_t popYieldCount{0};
+    uint64_t writeCallCount{0};
+    uint64_t writeSumNs{0};
+    uint64_t writeFlowControlYields{0};
+    uint64_t writeTimeoutCount{0};
+    uint64_t sharedLockCount{0};
+    uint64_t ioBufAllocCount{0};
+    uint64_t dispatchBuckets[folly::ShmPollerService::DiagStats::kDispatchNumBuckets]{};
+  };
+
+  auto takeShmSnapshot =
+      [](const folly::ShmPollerService::DiagStats& d) -> ShmDiagSnapshot {
+    ShmDiagSnapshot s;
+    s.dispatchCount = d.dispatchCount.load(std::memory_order_relaxed);
+    s.dispatchSumNs = d.dispatchSumNs.load(std::memory_order_relaxed);
+    s.popSuccessCount = d.popSuccessCount.load(std::memory_order_relaxed);
+    s.popEmptyCount = d.popEmptyCount.load(std::memory_order_relaxed);
+    s.popYieldCount = d.popYieldCount.load(std::memory_order_relaxed);
+    s.writeCallCount = d.writeCallCount.load(std::memory_order_relaxed);
+    s.writeSumNs = d.writeSumNs.load(std::memory_order_relaxed);
+    s.writeFlowControlYields =
+        d.writeFlowControlYields.load(std::memory_order_relaxed);
+    s.writeTimeoutCount = d.writeTimeoutCount.load(std::memory_order_relaxed);
+    s.sharedLockCount = d.sharedLockCount.load(std::memory_order_relaxed);
+    s.ioBufAllocCount = d.ioBufAllocCount.load(std::memory_order_relaxed);
+    for (int i = 0;
+         i < folly::ShmPollerService::DiagStats::kDispatchNumBuckets;
+         ++i) {
+      s.dispatchBuckets[i] =
+          d.dispatchBuckets_[i].load(std::memory_order_relaxed);
+    }
+    return s;
+  };
+
+  ShmDiagSnapshot prevShm;
+  if (shmPollerService) {
+    prevShm = takeShmSnapshot(shmPollerService->diagStats());
   }
-  while (true) {
-    int32_t sleepTimeSec = std::min(
-        FLAGS_terminate_sec - elapsedTimeSec, FLAGS_stats_interval_sec);
-    /* sleep override */
-    std::this_thread::sleep_for(std::chrono::seconds(sleepTimeSec));
-    stats.printStats(sleepTimeSec);
-    elapsedTimeSec += sleepTimeSec;
 
-    // Print SHM diagnostic stats
-    if (shmPollerService) {
-      const auto& d = shmPollerService->diagStats();
-      uint64_t dCount = d.dispatchCount.load(std::memory_order_relaxed);
-      uint64_t dSum = d.dispatchSumNs.load(std::memory_order_relaxed);
-      uint64_t popOk = d.popSuccessCount.load(std::memory_order_relaxed);
-      uint64_t popEmpty = d.popEmptyCount.load(std::memory_order_relaxed);
-      uint64_t popYield = d.popYieldCount.load(std::memory_order_relaxed);
-      uint64_t wCalls = d.writeCallCount.load(std::memory_order_relaxed);
-      uint64_t wSum = d.writeSumNs.load(std::memory_order_relaxed);
-      uint64_t wFcYields = d.writeFlowControlYields.load(
-          std::memory_order_relaxed);
-      uint64_t sLocks = d.sharedLockCount.load(std::memory_order_relaxed);
-      uint64_t ioBufs = d.ioBufAllocCount.load(std::memory_order_relaxed);
+  // Stats collector thread: snapshots QPSStats and SHM diag at the
+  // intended interval. Main thread reads results without blocking
+  // client threads via readFull() / atomic loads.
+  struct StatsResult {
+    double actualElapsedSec{0};
+    bool ready{false};
+  };
+  std::mutex statsMu;
+  std::condition_variable statsCv;
+  StatsResult latestStats;
+  std::atomic<bool> statsRunning{true};
 
-      double avgDispatchUs =
-          dCount > 0 ? static_cast<double>(dSum) / dCount / 1000.0 : 0;
-      double avgWriteUs =
-          wCalls > 0 ? static_cast<double>(wSum) / wCalls / 1000.0 : 0;
-      double emptyRatio =
-          (popOk + popEmpty) > 0
-              ? static_cast<double>(popEmpty) / (popOk + popEmpty) * 100
-              : 0;
+  std::thread statsThread([&]() {
+    auto lastWake = std::chrono::steady_clock::now();
+    while (statsRunning.load(std::memory_order_acquire)) {
+      std::this_thread::sleep_for(
+          std::chrono::seconds(FLAGS_stats_interval_sec));
+      auto now = std::chrono::steady_clock::now();
+      double elapsedSec =
+          std::chrono::duration<double>(now - lastWake).count();
+      lastWake = now;
 
-      LOG(INFO) << " | [SHM Diag] dispatch_avg(us): " << avgDispatchUs
-                << " | write_avg(us): " << avgWriteUs
-                << " | pop_empty_ratio(%): " << emptyRatio
-                << " | pop_yields: " << popYield
-                << " | write_fc_yields: " << wFcYields
-                << " | shared_locks: " << sLocks
-                << " | iobuf_allocs: " << ioBufs;
+      // Snapshot SHM diag under this thread (non-blocking atomic reads)
+      ShmDiagSnapshot curShm;
+      if (shmPollerService) {
+        curShm = takeShmSnapshot(shmPollerService->diagStats());
+      }
 
-      // Dispatch latency histogram (P50/P90/P99)
-      if (dCount > 0) {
-        uint64_t cumulative = 0;
-        uint64_t p50Target = dCount * 50 / 100;
-        uint64_t p90Target = dCount * 90 / 100;
-        uint64_t p99Target = dCount * 99 / 100;
+      {
+        std::lock_guard<std::mutex> lk(statsMu);
+        latestStats.actualElapsedSec = elapsedSec;
+        latestStats.ready = true;
+      }
+      statsCv.notify_one();
+
+      // Print QPSStats on the collector thread (readFull is isolated here)
+      stats.printStats(elapsedSec);
+
+      // Print SHM diag deltas — single LOG to reduce glog lock contention
+      if (shmPollerService) {
+        double avgDispatchUs =
+            (curShm.dispatchCount - prevShm.dispatchCount) > 0
+                ? static_cast<double>(
+                      curShm.dispatchSumNs - prevShm.dispatchSumNs) /
+                      (curShm.dispatchCount - prevShm.dispatchCount) / 1000.0
+                : 0;
+        double avgWriteUs =
+            (curShm.writeCallCount - prevShm.writeCallCount) > 0
+                ? static_cast<double>(
+                      curShm.writeSumNs - prevShm.writeSumNs) /
+                      (curShm.writeCallCount - prevShm.writeCallCount) /
+                      1000.0
+                : 0;
+        uint64_t intervalPopOk =
+            curShm.popSuccessCount - prevShm.popSuccessCount;
+        uint64_t intervalPopEmpty =
+            curShm.popEmptyCount - prevShm.popEmptyCount;
+        double emptyRatio =
+            (intervalPopOk + intervalPopEmpty) > 0
+                ? static_cast<double>(intervalPopEmpty) /
+                      (intervalPopOk + intervalPopEmpty) * 100
+                : 0;
+
+        // Per-interval percentile from delta histogram
         double p50 = 0, p90 = 0, p99 = 0;
-        for (int i = 0; i < folly::ShmPollerService::DiagStats::kDispatchNumBuckets; ++i) {
-          cumulative += d.dispatchBuckets_[i].load(std::memory_order_relaxed);
-          double upperUs = (i == 0)
-              ? (1ULL << folly::ShmPollerService::DiagStats::kDispatchBucketOffset) / 1000.0
-              : (1ULL << (i + folly::ShmPollerService::DiagStats::kDispatchBucketOffset)) / 1000.0;
-          if (p50 == 0 && cumulative >= p50Target) p50 = upperUs;
-          if (p90 == 0 && cumulative >= p90Target) p90 = upperUs;
-          if (p99 == 0 && cumulative >= p99Target) p99 = upperUs;
+        uint64_t intervalTotal = curShm.dispatchCount - prevShm.dispatchCount;
+        if (intervalTotal > 0) {
+          uint64_t cumulative = 0;
+          uint64_t p50Target = intervalTotal * 50 / 100;
+          uint64_t p90Target = intervalTotal * 90 / 100;
+          uint64_t p99Target = intervalTotal * 99 / 100;
+          for (int i = 0;
+               i < folly::ShmPollerService::DiagStats::kDispatchNumBuckets;
+               ++i) {
+            cumulative +=
+                curShm.dispatchBuckets[i] - prevShm.dispatchBuckets[i];
+            double upperUs =
+                (i == 0)
+                    ? (1ULL << folly::ShmPollerService::DiagStats::
+                          kDispatchBucketOffset) /
+                          1000.0
+                    : (1ULL << (i + folly::ShmPollerService::DiagStats::
+                                      kDispatchBucketOffset)) /
+                          1000.0;
+            if (p50 == 0 && cumulative >= p50Target) p50 = upperUs;
+            if (p90 == 0 && cumulative >= p90Target) p90 = upperUs;
+            if (p99 == 0 && cumulative >= p99Target) p99 = upperUs;
+          }
         }
-        LOG(INFO) << " | [SHM Diag] dispatch_P50(us): " << p50
-                  << " | dispatch_P90(us): " << p90
-                  << " | dispatch_P99(us): " << p99;
+
+        LOG(INFO) << " | [SHM Diag] dispatch_avg(us): " << avgDispatchUs
+                  << " | write_avg(us): " << avgWriteUs
+                  << " | pop_empty_ratio(%): " << emptyRatio
+                  << " | pop_yields: "
+                  << curShm.popYieldCount - prevShm.popYieldCount
+                  << " | write_fc_yields: "
+                  << curShm.writeFlowControlYields -
+                prevShm.writeFlowControlYields
+                  << " | write_timeouts: "
+                  << curShm.writeTimeoutCount - prevShm.writeTimeoutCount
+                  << " | shared_locks: "
+                  << curShm.sharedLockCount - prevShm.sharedLockCount
+                  << " | iobuf_allocs: "
+                  << curShm.ioBufAllocCount - prevShm.ioBufAllocCount
+                  << " | P50(us): " << p50 << " | P90(us): " << p90
+                  << " | P99(us): " << p99;
+
+        prevShm = curShm;
       }
     }
+  });
 
-    if (elapsedTimeSec >= FLAGS_terminate_sec) {
-      break;
-    }
+  int32_t elapsedTimeSec = 0;
+  if (FLAGS_terminate_sec == 0) {
+    FLAGS_terminate_sec = 100000000;
   }
+  while (elapsedTimeSec < FLAGS_terminate_sec) {
+    int32_t sleepTimeSec = std::min(
+        FLAGS_terminate_sec - elapsedTimeSec, FLAGS_stats_interval_sec);
+    std::this_thread::sleep_for(std::chrono::seconds(sleepTimeSec));
+    elapsedTimeSec += sleepTimeSec;
+  }
+
+  statsRunning.store(false, std::memory_order_release);
+  statsThread.join();
   for (auto& evb : evbs) {
     evb->terminateLoopSoon();
   }
