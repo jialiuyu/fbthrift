@@ -64,13 +64,20 @@ class Runner {
   }
 
   void finishCall() {
-    if (!exiting_) {
+    if (!exiting_ && !inFinishCall_) {
+      // Guard against synchronous re-entry: if the channel fails a send
+      // synchronously (e.g., canHandleRequest throws), the error callback
+      // invokes finishCall() before the original run() returns, causing
+      // unbounded recursion. Break the cycle by deferring to the EventBase.
+      inFinishCall_ = true;
       run(); // Attempt to perform more async calls
+      inFinishCall_ = false;
     }
   }
 
  private:
   bool exiting_{false};
+  bool inFinishCall_{false};
   std::unique_ptr<Operation<AsyncClient>> ops_;
   std::unique_ptr<std::discrete_distribution<int32_t>> d_;
   int32_t max_outstanding_ops_;
