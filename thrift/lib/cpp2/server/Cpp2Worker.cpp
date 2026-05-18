@@ -274,67 +274,55 @@ void Cpp2Worker::handleHeader(
 
 std::shared_ptr<folly::AsyncTransport> Cpp2Worker::createThriftTransport(
     folly::AsyncTransport::UniquePtr sock) {
-  // Check if shared memory transport upgrade is enabled
+  // Check if shared memory transport upgrade is enabled.
+  // When enabled, attempt SHM handshake directly on every connection.
+  // The handshake protocol uses a distinct magic ("SHMS") that causes
+  // a parse failure for non-SHM clients, after which we fall back.
   if (server_ && server_->getUseShmTransport()) {
-    // Peek at the first bytes to detect SHM handshake protocol without
-    // consuming them.  Both SHM shared ("SHMS", 0x53484D53) and legacy
-    // ("SHMT", 0x53484D54) frames start with [4B payloadSize][4B magic].
-    bool looksLikeShm = false;
-    if (auto* asyncSock = sock->getUnderlyingTransport<folly::AsyncSocket>()) {
-      int fd = asyncSock->getFd();
-      if (fd >= 0) {
-        uint8_t peekBuf[8];
-        ssize_t n = ::recv(fd, peekBuf, sizeof(peekBuf), MSG_PEEK);
-        if (n >= 8 && peekBuf[4] == 'S' && peekBuf[5] == 'H' &&
-            peekBuf[6] == 'M') {
-          looksLikeShm = true;
-        }
+    LOG(INFO) << "createThriftTransport: SHM mode, attempting handshake";
+    try {
+      auto pollerService = server_->getShmPollerService();
+      if (pollerService) {
+        // Shared mode: ShmPollerService pre-initialized
+        uint16_t connId = pollerService->allocateConnId();
+        auto hsResult = folly::shmHandshakeServerShared(
+            getEventBase(), sock.get(), connId);
+        auto shmTransport =
+            folly::BusyPollSharedMemoryTransport::createShared(
+                getEventBase(),
+                pollerService.get(),
+                hsResult.localConnId,
+                hsResult.peerConnId,
+                hsResult.laneId);
+        pollerService->registerTransport(
+            hsResult.localConnId, shmTransport.get(), getEventBase(),
+            hsResult.laneId);
+        return apache::thrift::transport::detail::convertToShared(
+            folly::AsyncTransport::UniquePtr(shmTransport.release()));
+      } else {
+        // Legacy per-connection mode
+        folly::BusyPollSharedMemoryTransport::Config shmConfig;
+        shmConfig.pollingMode =
+            folly::BusyPollSharedMemoryTransport::PollingMode::ADAPTIVE;
+        shmConfig.memoryProvider = server_->getShmMemoryProvider();
+        shmConfig.writePoolName = "s2c";
+        shmConfig.readPoolName = "c2s";
+        auto shmResult = folly::shmHandshakeServer(
+            getEventBase(), sock.get(), shmConfig);
+        auto shmTransport = folly::BusyPollSharedMemoryTransport::create(
+            getEventBase(),
+            std::move(shmResult.writeRegion),
+            std::move(shmResult.readRegion),
+            std::move(shmResult.gqmWrite),
+            std::move(shmResult.gqmRead),
+            shmConfig);
+        return apache::thrift::transport::detail::convertToShared(
+            folly::AsyncTransport::UniquePtr(shmTransport.release()));
       }
-    }
-
-    if (looksLikeShm) {
-      try {
-        auto pollerService = server_->getShmPollerService();
-        if (pollerService) {
-          // Shared mode: ShmPollerService pre-initialized
-          uint16_t connId = pollerService->allocateConnId();
-          auto hsResult = folly::shmHandshakeServerShared(
-              getEventBase(), sock.get(), connId);
-          auto shmTransport =
-              folly::BusyPollSharedMemoryTransport::createShared(
-                  getEventBase(),
-                  pollerService.get(),
-                  hsResult.localConnId,
-                  hsResult.peerConnId);
-          pollerService->registerTransport(
-              hsResult.localConnId, shmTransport.get(), getEventBase());
-          return apache::thrift::transport::detail::convertToShared(
-              folly::AsyncTransport::UniquePtr(shmTransport.release()));
-        } else {
-          // Legacy per-connection mode
-          folly::BusyPollSharedMemoryTransport::Config shmConfig;
-          shmConfig.pollingMode =
-              folly::BusyPollSharedMemoryTransport::PollingMode::ADAPTIVE;
-          shmConfig.memoryProvider = server_->getShmMemoryProvider();
-          shmConfig.writePoolName = "s2c";
-          shmConfig.readPoolName = "c2s";
-          auto shmResult = folly::shmHandshakeServer(
-              getEventBase(), sock.get(), shmConfig);
-          auto shmTransport = folly::BusyPollSharedMemoryTransport::create(
-              getEventBase(),
-              std::move(shmResult.writeRegion),
-              std::move(shmResult.readRegion),
-              std::move(shmResult.gqmWrite),
-              std::move(shmResult.gqmRead),
-              shmConfig);
-          return apache::thrift::transport::detail::convertToShared(
-              folly::AsyncTransport::UniquePtr(shmTransport.release()));
-        }
-      } catch (const std::exception& ex) {
-        LOG(ERROR) << "SHM handshake failed, falling back to TCP: "
-                   << ex.what();
-        // Fall through to regular TCP transport
-      }
+    } catch (const std::exception& ex) {
+      LOG(ERROR) << "SHM handshake failed, falling back to TCP: "
+                 << ex.what();
+      // Fall through to regular TCP transport
     }
   }
 

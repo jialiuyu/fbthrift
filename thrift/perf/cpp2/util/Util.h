@@ -102,17 +102,30 @@ static std::unique_ptr<AsyncClient> newShmClient(
     folly::ShmPollerService* pollerService = nullptr) {
   auto sock = apache::thrift::perf::getSocket(evb, addr, false);
 
+  // Wait for TCP connection to be fully established before SHM handshake
+  // getSocket() initiates an async connect; the SHM handshake must not
+  // start until the TCP three-way handshake completes.
+  while (!sock->good() || sock->connecting()) {
+    evb->loopOnce();
+  }
+  if (!sock->good()) {
+    throw std::runtime_error("SHM client: TCP connection failed");
+  }
+  LOG(INFO) << "SHM client: TCP connection established, starting handshake";
+
   if (pollerService) {
     uint16_t connId = pollerService->allocateConnId();
+    uint8_t laneId = pollerService->selectLane();
     auto hsResult = folly::shmHandshakeClientShared(
-        evb, sock.get(), connId);
+        evb, sock.get(), connId, laneId);
     auto transport = folly::BusyPollSharedMemoryTransport::createShared(
         evb,
         pollerService,
         hsResult.localConnId,
-        hsResult.peerConnId);
+        hsResult.peerConnId,
+        laneId);
     pollerService->registerTransport(
-        hsResult.localConnId, transport.get(), evb);
+        hsResult.localConnId, transport.get(), evb, laneId);
     auto chan = RocketClientChannel::newChannel(
         folly::AsyncTransport::UniquePtr(transport.release()));
     return std::make_unique<AsyncClient>(std::move(chan));

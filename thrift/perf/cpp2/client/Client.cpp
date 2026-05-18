@@ -23,6 +23,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
+#include <folly/Format.h>
 #include <folly/io/async/ImportedMemoryProvider.h>
 #include <folly/io/async/PosixShmProvider.h>
 #include <folly/io/async/ShmPollerService.h>
@@ -48,6 +49,7 @@ DEFINE_bool(
     posix_shm,
     false,
     "Use POSIX shm_open instead of CXL device files (requires --transport=shm)");
+DEFINE_int32(shm_lanes, 1, "Number of SHM lanes (must match server)");
 DEFINE_string(
     output_format,
     "text",
@@ -82,16 +84,28 @@ static void* mmapDeviceFile(const char* path, size_t size) {
 static std::shared_ptr<folly::ShmPollerService> makeShmPollerService() {
   auto provider = std::make_shared<folly::ImportedMemoryProvider>();
 
+  auto registerLanePools =
+      [&](void* base, size_t totalSize, const std::string& prefix) {
+        size_t perLane = totalSize / FLAGS_shm_lanes;
+        for (int i = 0; i < FLAGS_shm_lanes; ++i) {
+          auto name = folly::sformat("{}_lane{}", prefix, i);
+          auto* ptr = static_cast<char*>(base) + i * perLane;
+          provider->registerPool(name, ptr, perLane);
+        }
+      };
+
   if (FLAGS_posix_shm) {
     // POSIX SHM path — attach to server-created regions
     auto posixProvider = std::make_shared<folly::PosixShmProvider>();
     auto c2sRegion = posixProvider->import("/fbthrift_shm_c2s", kShmPoolSize);
     auto s2cRegion = posixProvider->import("/fbthrift_shm_s2c", kShmPoolSize);
-    provider->registerPool("c2s", c2sRegion->data(), c2sRegion->size());
-    provider->registerPool("s2c", s2cRegion->data(), s2cRegion->size());
+    registerLanePools(c2sRegion->data(), c2sRegion->size(), "c2s");
+    registerLanePools(s2cRegion->data(), s2cRegion->size(), "s2c");
 
     auto pollerService = std::make_shared<folly::ShmPollerService>();
-    pollerService->initFromProvider(*provider, "c2s", "s2c", false);
+    pollerService->initFromProvider(
+        *provider, "c2s", "s2c", false,
+        static_cast<uint8_t>(FLAGS_shm_lanes));
     pollerService->startPollers();
 
     // Hold region ownership for the client lifetime
@@ -107,12 +121,13 @@ static std::shared_ptr<folly::ShmPollerService> makeShmPollerService() {
   // CXL device file path — original behavior
   void* c2sMem = mmapDeviceFile(kShmDevFileC2S, kShmPoolSize);
   void* s2cMem = mmapDeviceFile(kShmDevFileS2C, kShmPoolSize);
-
-  provider->registerPool("c2s", c2sMem, kShmPoolSize);
-  provider->registerPool("s2c", s2cMem, kShmPoolSize);
+  registerLanePools(c2sMem, kShmPoolSize, "c2s");
+  registerLanePools(s2cMem, kShmPoolSize, "s2c");
 
   auto pollerService = std::make_shared<folly::ShmPollerService>();
-  pollerService->initFromProvider(*provider, "c2s", "s2c", false);
+  pollerService->initFromProvider(
+      *provider, "c2s", "s2c", false,
+      static_cast<uint8_t>(FLAGS_shm_lanes));
   pollerService->startPollers();
 
   LOG(INFO) << "SHM client: CXL device files " << kShmDevFileS2C

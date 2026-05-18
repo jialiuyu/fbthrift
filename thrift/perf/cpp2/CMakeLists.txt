@@ -73,6 +73,11 @@ include_directories(
   ${FOLLY_ROOT}
 )
 
+# Homebrew headers for xxhash etc., but exclude conflicting glog/gflags
+include_directories(
+  /opt/homebrew/opt/xxhash/include
+)
+
 # ---------------------------------------------------------------------------
 # Thrift code generation
 # ---------------------------------------------------------------------------

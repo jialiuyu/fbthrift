@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <thread>
 
+#include <folly/Format.h>
 #include <folly/init/Init.h>
 #include <folly/io/async/ImportedMemoryProvider.h>
 #include <folly/io/async/PosixShmProvider.h>
@@ -86,6 +87,8 @@ DEFINE_int32(cpu_threads, 0, "Number of CPU threads (0 means number of cores)");
 DEFINE_int32(stats_interval_sec, 1, "Seconds between stats");
 DEFINE_int32(warmup_sec, 0, "Seconds to warm up before QPS stats are reported");
 DEFINE_int32(terminate_sec, 0, "How long to run server (0 means forever)");
+DEFINE_int32(shm_lanes, 1, "Number of SHM lanes per direction (1=legacy, >1=multi-poller)");
+DEFINE_bool(shm_pin_pollers, true, "Pin SHM poller threads to dedicated CPU cores");
 
 using apache::thrift::ThriftServer;
 using apache::thrift::ThriftServerAsyncProcessorFactory;
@@ -151,41 +154,55 @@ int main(int argc, char** argv) {
 
     auto provider = std::make_shared<folly::ImportedMemoryProvider>();
 
+    auto registerLanePools =
+        [&](void* base, size_t totalSize, const std::string& prefix) {
+          size_t perLane = totalSize / FLAGS_shm_lanes;
+          for (int i = 0; i < FLAGS_shm_lanes; ++i) {
+            auto name = folly::sformat("{}_lane{}", prefix, i);
+            auto* ptr = static_cast<char*>(base) + i * perLane;
+            provider->registerPool(name, ptr, perLane);
+          }
+        };
+
     if (FLAGS_posix_shm) {
       // POSIX SHM path — works without CXL hardware
+      // Clean up stale shm objects from previous unclean shutdowns
+      ::shm_unlink("/fbthrift_shm_s2c");
+      ::shm_unlink("/fbthrift_shm_c2s");
+
       auto posixProvider = std::make_shared<folly::PosixShmProvider>();
       auto s2cRegion = posixProvider->create("/fbthrift_shm_s2c", kShmPoolSize);
       auto c2sRegion = posixProvider->create("/fbthrift_shm_c2s", kShmPoolSize);
-      provider->registerPool("s2c", s2cRegion->data(), s2cRegion->size());
-      provider->registerPool("c2s", c2sRegion->data(), c2sRegion->size());
+      registerLanePools(s2cRegion->data(), s2cRegion->size(), "s2c");
+      registerLanePools(c2sRegion->data(), c2sRegion->size(), "c2s");
 
-      // Hold region ownership for the server lifetime
       auto pollerService = std::make_shared<folly::ShmPollerService>();
-      pollerService->initFromProvider(*provider, "s2c", "c2s", true);
+      pollerService->initFromProvider(
+          *provider, "s2c", "c2s", true,
+          static_cast<uint8_t>(FLAGS_shm_lanes));
       pollerService->startPollers();
 
       server->setShmMemoryProvider(std::move(provider));
       server->setShmPollerService(std::move(pollerService));
 
-      // Keep regions alive by storing in the server's custom deleter context
-      // via a shared_ptr capture — the provider holds raw pointers from
-      // data()/size(), so we must keep the PosixShmRegion objects alive.
       static auto sKeptS2C = std::move(s2cRegion);
       static auto sKeptC2S = std::move(c2sRegion);
 
       LOG(INFO) << "SHM mode: POSIX shm_open regions "
                 << "/fbthrift_shm_s2c / /fbthrift_shm_c2s mapped ("
-                << kShmPoolSize << " bytes each), ShmPollerService started";
+                << kShmPoolSize << " bytes each), " << FLAGS_shm_lanes
+                << " lanes, ShmPollerService started";
     } else {
       // CXL device file path — original behavior
       void* s2cMem = mmapDeviceFile(kShmDevFileS2C, kShmPoolSize);
       void* c2sMem = mmapDeviceFile(kShmDevFileC2S, kShmPoolSize);
-
-      provider->registerPool("s2c", s2cMem, kShmPoolSize);
-      provider->registerPool("c2s", c2sMem, kShmPoolSize);
+      registerLanePools(s2cMem, kShmPoolSize, "s2c");
+      registerLanePools(c2sMem, kShmPoolSize, "c2s");
 
       auto pollerService = std::make_shared<folly::ShmPollerService>();
-      pollerService->initFromProvider(*provider, "s2c", "c2s", true);
+      pollerService->initFromProvider(
+          *provider, "s2c", "c2s", true,
+          static_cast<uint8_t>(FLAGS_shm_lanes));
       pollerService->startPollers();
 
       server->setShmMemoryProvider(std::move(provider));
@@ -196,6 +213,13 @@ int main(int argc, char** argv) {
                 << " bytes each), ShmPollerService started";
     }
   }
+
+  // Debug: verify SHM transport settings
+  fprintf(stderr, "DEBUG: useShmTransport=%d pollerService=%s memoryProvider=%s\n",
+      server->getUseShmTransport(),
+      server->getShmPollerService() ? "set" : "null",
+      server->getShmMemoryProvider() ? "set" : "null");
+  fflush(stderr);
 
 #if PERF_CPP2_HAVE_HTTP2
   server->addRoutingHandler(createHTTP2RoutingHandler(server));
