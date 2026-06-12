@@ -24,6 +24,7 @@
 #include <thrift/lib/cpp2/server/ThriftServer.h>
 #include <thrift/lib/cpp2/transport/http2/common/HTTP2RoutingHandler.h>
 #include <thrift/perf/cpp2/server/BenchmarkHandler.h>
+#include <thrift/perf/cpp2/util/CxlMemBenchmarkTransport.h>
 #include <thrift/perf/cpp2/util/QPSStats.h>
 
 #include <unistd.h>
@@ -37,6 +38,24 @@ DEFINE_int32(io_threads, 0, "Number of IO threads (0 means number of cores)");
 DEFINE_int32(cpu_threads, 0, "Number of CPU threads (0 means number of cores)");
 DEFINE_int32(stats_interval_sec, 1, "Seconds between stats");
 DEFINE_int32(terminate_sec, 0, "How long to run server (0 means forever)");
+DEFINE_bool(
+    cxl_mem_enable,
+    false,
+    "Enable benchmark-only CXL.mem Rocket routing handler");
+DEFINE_string(cxl_mem_backend, "stub", "CXL.mem backend: stub or hardware");
+DEFINE_string(
+    cxl_mem_path_prefix,
+    "/tmp/fbthrift_cxl_mem",
+    "Prefix for CXL.mem benchmark shm region files");
+DEFINE_uint32(
+    cxl_mem_payload_slice_size,
+    1 << 20,
+    "Payload slice bytes per CXL.mem direction");
+DEFINE_uint32(
+    cxl_mem_hwqueues_per_doorbell,
+    1,
+    "HW queues per CXL.mem DATA or ACK doorbell");
+DEFINE_uint32(cxl_mem_poll_interval_ms, 1, "CXL.mem poll interval in ms");
 
 using apache::thrift::HTTP2RoutingHandler;
 using apache::thrift::ThriftServer;
@@ -45,6 +64,21 @@ using facebook::thrift::benchmarks::BenchmarkHandler;
 using facebook::thrift::benchmarks::QPSStats;
 using proxygen::HTTPServerOptions;
 using std::thread;
+
+namespace {
+
+apache::thrift::perf::CxlMemBenchmarkOptions cxlMemOptionsFromFlags() {
+  apache::thrift::perf::CxlMemBenchmarkOptions options;
+  options.backend = FLAGS_cxl_mem_backend;
+  options.pathPrefix = FLAGS_cxl_mem_path_prefix;
+  options.payloadSliceSize = FLAGS_cxl_mem_payload_slice_size;
+  options.hwQueuesPerDoorbell =
+      static_cast<uint16_t>(FLAGS_cxl_mem_hwqueues_per_doorbell);
+  options.pollIntervalMs = FLAGS_cxl_mem_poll_interval_ms;
+  return options;
+}
+
+} // namespace
 
 std::unique_ptr<HTTP2RoutingHandler> createHTTP2RoutingHandler(
     std::shared_ptr<ThriftServer> server) {
@@ -92,6 +126,11 @@ int main(int argc, char** argv) {
   server->setNumCPUWorkerThreads(FLAGS_cpu_threads);
   server->setInterface(cpp2PFac);
 
+  if (FLAGS_cxl_mem_enable) {
+    server->addRoutingHandler(
+        apache::thrift::perf::createCxlMemBenchmarkRoutingHandler(
+            *server, cxlMemOptionsFromFlags()));
+  }
   server->addRoutingHandler(createHTTP2RoutingHandler(server));
 
   thread logger([&] {

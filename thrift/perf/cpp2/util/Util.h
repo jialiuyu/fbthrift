@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <glog/logging.h>
+
 #include <folly/SocketAddress.h>
 #include <folly/io/async/AsyncSSLSocket.h>
 #include <folly/io/async/AsyncSocket.h>
@@ -27,6 +29,7 @@
 #include <thrift/lib/cpp2/transport/core/ThriftClient.h>
 #include <thrift/lib/cpp2/transport/core/testutil/ServerConfigsMock.h>
 #include <thrift/lib/cpp2/transport/http2/client/H2ClientConnection.h>
+#include <thrift/perf/cpp2/util/CxlMemBenchmarkTransport.h>
 
 using apache::thrift::ClientConnectionIf;
 using apache::thrift::H2ClientConnection;
@@ -72,6 +75,22 @@ static std::unique_ptr<AsyncClient> newRocketClient(
   RocketClientChannel::Ptr channel =
       RocketClientChannel::newChannel(std::move(sock));
   return std::make_unique<AsyncClient>(std::move(channel));
+}
+
+template <typename AsyncClient>
+static std::unique_ptr<AsyncClient> newCxlMemRocketClient(
+    folly::EventBase* evb,
+    const folly::SocketAddress& addr,
+    apache::thrift::perf::CxlMemBenchmarkOptions options) {
+  auto transport = apache::thrift::perf::tryCreateCxlMemBenchmarkClientTransport(
+      evb, addr, std::move(options));
+  if (transport) {
+    RocketClientChannel::Ptr channel =
+        RocketClientChannel::newChannel(std::move(transport));
+    return std::make_unique<AsyncClient>(std::move(channel));
+  }
+  LOG(INFO) << "Falling back to rocket socket transport for cxl_mem";
+  return newRocketClient<AsyncClient>(evb, addr, false);
 }
 
 template <typename AsyncClient>

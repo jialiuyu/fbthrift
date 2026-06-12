@@ -73,6 +73,28 @@ the transport flag. We currently support http2, and reactive sockets.
 
 `--transport="rocket"`
 
+`--transport="cxl_mem"`
+
+### CXL.mem/shm Rocket benchmark
+
+`cxl_mem` 是 benchmark 专用的 Rocket 数据面选项。client 先通过普通
+socket 发送 13 字节 CXL.mem 握手；server 需要显式启用
+`--cxl_mem_enable`，识别握手后创建 `folly::CxlMemAsyncTransport` 并交给
+Rocket routing handler。client 初始化失败时会打印原因并回退到
+`rocket` socket transport。
+
+client 和 server 必须使用相同的 region 前缀、payload slice 大小和
+doorbell 配置：
+
+```
+./server --cxl_mem_enable --cxl_mem_path_prefix=/tmp/fbthrift_cxl_mem
+./client --transport=cxl_mem --cxl_mem_path_prefix=/tmp/fbthrift_cxl_mem --noop_weight=1
+```
+
+当前只接入 `--cxl_mem_backend=stub`。stub backend 适合验证 benchmark
+接入路径；跨进程稳定压测仍需要后续使用 hardware backend 或把 stub
+队列升级为跨进程同步实现。
+
 ## Reading the metrics
 
 On both on the client and the server side, the output will look like the following:

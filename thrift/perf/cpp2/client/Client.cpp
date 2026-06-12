@@ -32,7 +32,22 @@ DEFINE_string(
 
 // Client Settings
 DEFINE_int32(num_clients, 0, "Number of clients to use. (Default: 1 per core)");
-DEFINE_string(transport, "header", "Transport to use: header, rocket, http2");
+DEFINE_string(
+    transport, "header", "Transport to use: header, rocket, http2, cxl_mem");
+DEFINE_string(cxl_mem_backend, "stub", "CXL.mem backend: stub or hardware");
+DEFINE_string(
+    cxl_mem_path_prefix,
+    "/tmp/fbthrift_cxl_mem",
+    "Prefix for CXL.mem benchmark shm region files");
+DEFINE_uint32(
+    cxl_mem_payload_slice_size,
+    1 << 20,
+    "Payload slice bytes per CXL.mem direction");
+DEFINE_uint32(
+    cxl_mem_hwqueues_per_doorbell,
+    1,
+    "HW queues per CXL.mem DATA or ACK doorbell");
+DEFINE_uint32(cxl_mem_poll_interval_ms, 1, "CXL.mem poll interval in ms");
 
 // General Settings
 DEFINE_int32(stats_interval_sec, 1, "Seconds between stats");
@@ -55,6 +70,21 @@ DEFINE_int32(co_sum_weight, 0, "Test with a co_sum operation");
 
 DEFINE_uint32(chunk_size, 1024, "Number of bytes per chunk");
 DEFINE_uint32(batch_size, 16, "Flow control batch size");
+
+namespace {
+
+apache::thrift::perf::CxlMemBenchmarkOptions cxlMemOptionsFromFlags() {
+  apache::thrift::perf::CxlMemBenchmarkOptions options;
+  options.backend = FLAGS_cxl_mem_backend;
+  options.pathPrefix = FLAGS_cxl_mem_path_prefix;
+  options.payloadSliceSize = FLAGS_cxl_mem_payload_slice_size;
+  options.hwQueuesPerDoorbell =
+      static_cast<uint16_t>(FLAGS_cxl_mem_hwqueues_per_doorbell);
+  options.pollIntervalMs = FLAGS_cxl_mem_poll_interval_ms;
+  return options;
+}
+
+} // namespace
 
 /*
  * This starts num_clients threads with a unique client in each thread.
@@ -85,8 +115,12 @@ int main(int argc, char** argv) {
         LOG(INFO) << "Connecting [" << FLAGS_host << "]:" << FLAGS_port;
         addr.setFromHostPort(FLAGS_host, FLAGS_port);
       }
-      auto client = newClient<StreamBenchmarkAsyncClient>(
-          evb.get(), addr, FLAGS_transport);
+      auto client = apache::thrift::perf::isCxlMemBenchmarkTransport(
+                        FLAGS_transport)
+          ? newCxlMemRocketClient<StreamBenchmarkAsyncClient>(
+                evb.get(), addr, cxlMemOptionsFromFlags())
+          : newClient<StreamBenchmarkAsyncClient>(
+                evb.get(), addr, FLAGS_transport);
 
       // Create the Operations and their Discrete Distributions
       // Every time a new operation is added, the distribution needs to
