@@ -24,7 +24,6 @@
 #include <thrift/perf/cpp2/util/QPSStats.h>
 #include <thrift/perf/cpp2/util/Util.h>
 
-using apache::thrift::ClientConnectionIf;
 using apache::thrift::ClientReceiveState;
 using apache::thrift::RequestCallback;
 using facebook::thrift::benchmarks::QPSStats;

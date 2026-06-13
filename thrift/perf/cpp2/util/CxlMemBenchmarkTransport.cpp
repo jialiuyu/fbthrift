@@ -320,7 +320,7 @@ class CxlMemBenchmarkAsyncTransport final : public StubTransport {
         resources_(std::move(resources)),
         pollTimeout_(this, evb),
         pollIntervalMs_(resources_->pollIntervalMs()) {
-    CxlMemPollerQueueOptions options;
+    folly::CxlMemPollerQueueOptions options;
     pollHandle_ = poller_.addQueue(
         evb,
         inboundDataQueue,

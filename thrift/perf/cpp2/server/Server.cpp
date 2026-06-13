@@ -20,9 +20,11 @@
 #include <folly/portability/GFlags.h>
 #include <folly/system/HardwareConcurrency.h>
 
+#if THRIFT_PERF_CPP2_ENABLE_HTTP2
 #include <proxygen/httpserver/HTTPServerOptions.h>
-#include <thrift/lib/cpp2/server/ThriftServer.h>
 #include <thrift/lib/cpp2/transport/http2/common/HTTP2RoutingHandler.h>
+#endif
+#include <thrift/lib/cpp2/server/ThriftServer.h>
 #include <thrift/perf/cpp2/server/BenchmarkHandler.h>
 #include <thrift/perf/cpp2/util/CxlMemBenchmarkTransport.h>
 #include <thrift/perf/cpp2/util/QPSStats.h>
@@ -57,12 +59,16 @@ DEFINE_uint32(
     "HW queues per CXL.mem DATA or ACK doorbell");
 DEFINE_uint32(cxl_mem_poll_interval_ms, 1, "CXL.mem poll interval in ms");
 
+#if THRIFT_PERF_CPP2_ENABLE_HTTP2
 using apache::thrift::HTTP2RoutingHandler;
+#endif
 using apache::thrift::ThriftServer;
 using apache::thrift::ThriftServerAsyncProcessorFactory;
 using facebook::thrift::benchmarks::BenchmarkHandler;
 using facebook::thrift::benchmarks::QPSStats;
+#if THRIFT_PERF_CPP2_ENABLE_HTTP2
 using proxygen::HTTPServerOptions;
+#endif
 using std::thread;
 
 namespace {
@@ -80,6 +86,7 @@ apache::thrift::perf::CxlMemBenchmarkOptions cxlMemOptionsFromFlags() {
 
 } // namespace
 
+#if THRIFT_PERF_CPP2_ENABLE_HTTP2
 std::unique_ptr<HTTP2RoutingHandler> createHTTP2RoutingHandler(
     std::shared_ptr<ThriftServer> server) {
   auto h2_options = std::make_unique<HTTPServerOptions>();
@@ -89,6 +96,7 @@ std::unique_ptr<HTTP2RoutingHandler> createHTTP2RoutingHandler(
   return std::make_unique<HTTP2RoutingHandler>(
       std::move(h2_options), server->getThriftProcessor(), *server);
 }
+#endif
 
 int main(int argc, char** argv) {
   const folly::Init init(&argc, &argv);
@@ -131,7 +139,9 @@ int main(int argc, char** argv) {
         apache::thrift::perf::createCxlMemBenchmarkRoutingHandler(
             *server, cxlMemOptionsFromFlags()));
   }
+#if THRIFT_PERF_CPP2_ENABLE_HTTP2
   server->addRoutingHandler(createHTTP2RoutingHandler(server));
+#endif
 
   thread logger([&] {
     int32_t elapsedTimeSec = 0;

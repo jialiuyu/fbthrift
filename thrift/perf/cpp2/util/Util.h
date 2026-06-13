@@ -26,16 +26,20 @@
 #include <thrift/lib/cpp2/async/HeaderClientChannel.h>
 #include <thrift/lib/cpp2/async/RocketClientChannel.h>
 #include <thrift/lib/cpp2/server/ThriftServer.h>
-#include <thrift/lib/cpp2/transport/core/ThriftClient.h>
 #include <thrift/lib/cpp2/transport/core/testutil/ServerConfigsMock.h>
+#if THRIFT_PERF_CPP2_ENABLE_HTTP2
+#include <thrift/lib/cpp2/transport/core/ThriftClient.h>
 #include <thrift/lib/cpp2/transport/http2/client/H2ClientConnection.h>
+#endif
 #include <thrift/perf/cpp2/util/CxlMemBenchmarkTransport.h>
 
-using apache::thrift::ClientConnectionIf;
-using apache::thrift::H2ClientConnection;
 using apache::thrift::HeaderClientChannel;
 using apache::thrift::RocketClientChannel;
+#if THRIFT_PERF_CPP2_ENABLE_HTTP2
+using apache::thrift::ClientConnectionIf;
+using apache::thrift::H2ClientConnection;
 using apache::thrift::ThriftClient;
+#endif
 using apache::thrift::ThriftServerAsyncProcessorFactory;
 using apache::thrift::server::ServerConfigsMock;
 
@@ -59,6 +63,7 @@ static std::unique_ptr<AsyncClient> newHeaderClient(
 template <typename AsyncClient>
 static std::unique_ptr<AsyncClient> newHTTP2Client(
     folly::EventBase* evb, const folly::SocketAddress& addr, bool encrypted) {
+#if THRIFT_PERF_CPP2_ENABLE_HTTP2
   auto sock = apache::thrift::perf::getSocket(evb, addr, encrypted, {"h2"});
   std::shared_ptr<ClientConnectionIf> conn =
       H2ClientConnection::newHTTP2Connection(std::move(sock));
@@ -66,6 +71,13 @@ static std::unique_ptr<AsyncClient> newHTTP2Client(
   client->setProtocolId(apache::thrift::protocol::T_COMPACT_PROTOCOL);
   client->setTimeout(500);
   return std::make_unique<AsyncClient>(std::move(client));
+#else
+  (void)evb;
+  (void)addr;
+  (void)encrypted;
+  LOG(FATAL) << "HTTP/2 support was not built for thrift_perf_cpp2_client";
+  return nullptr;
+#endif
 }
 
 template <typename AsyncClient>
