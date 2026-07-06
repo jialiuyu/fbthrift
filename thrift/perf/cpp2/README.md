@@ -95,6 +95,10 @@ doorbell 配置：
 接入路径；跨进程稳定压测仍需要后续使用 hardware backend 或把 stub
 队列升级为跨进程同步实现。
 
+CXL hot IO shard 使用 fd-free busy-poll `EventBase` 的移植方案见
+`CXL_MEM_BUSY_POLL_EVENTBASE_PORTING_GUIDE.md`。文档中北向 CXL 接口按
+可替换能力泛化描述，南向 folly/fbthrift 接口精确到源码组件。
+
 ## Reading the metrics
 
 On both on the client and the server side, the output will look like the following:
