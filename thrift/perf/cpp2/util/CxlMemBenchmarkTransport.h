@@ -44,6 +44,7 @@ struct CxlMemBenchmarkOptions {
   uint32_t handoffQueueCapacity{1024};
   uint32_t hotSpinPauseIterations{64};
   bool cacheCoherentMapping{true};
+  bool hotBusyPollEventBase{true};
 };
 
 bool isCxlMemBenchmarkTransport(folly::StringPiece transport);

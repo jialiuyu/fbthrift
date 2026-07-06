@@ -70,6 +70,10 @@ DEFINE_uint32(
     cxl_mem_hot_spin_pause_iterations,
     64,
     "Pause instructions per idle CXL.mem hot IO loop");
+DEFINE_bool(
+    cxl_mem_hot_busy_poll_eventbase,
+    true,
+    "Use fd-free busy-poll EventBase for CXL.mem hot IO threads");
 
 #if THRIFT_PERF_CPP2_ENABLE_HTTP2
 using apache::thrift::HTTP2RoutingHandler;
@@ -96,6 +100,7 @@ apache::thrift::perf::CxlMemBenchmarkOptions cxlMemOptionsFromFlags() {
   options.hotIoThreads = FLAGS_cxl_mem_hot_io_threads;
   options.handoffQueueCapacity = FLAGS_cxl_mem_handoff_queue_capacity;
   options.hotSpinPauseIterations = FLAGS_cxl_mem_hot_spin_pause_iterations;
+  options.hotBusyPollEventBase = FLAGS_cxl_mem_hot_busy_poll_eventbase;
   return options;
 }
 

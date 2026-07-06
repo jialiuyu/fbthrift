@@ -23,6 +23,7 @@
 #include <folly/io/IOBuf.h>
 #include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/AsyncTimeout.h>
+#include <folly/io/async/BusyPollBackend.h>
 #include <folly/io/async/CxlMemAsyncTransport.h>
 #include <folly/io/async/CxlMemPoller.h>
 #include <folly/io/async/CxlMemRegion.h>
@@ -480,6 +481,18 @@ RocketRoutingHandler* findRocketHandler(ThriftServer* server) {
   return nullptr;
 }
 
+folly::EventBase::Options makeHotIoEventBaseOptions(
+    const CxlMemBenchmarkOptions& options) {
+  folly::EventBase::Options eventBaseOptions;
+  if (options.hotBusyPollEventBase) {
+    eventBaseOptions.setBackendFactory(
+        [] { return std::make_unique<folly::BusyPollBackend>(); });
+    eventBaseOptions.setNotificationQueueMode(
+        folly::EventBase::NotificationQueueMode::ManualPoll);
+  }
+  return eventBaseOptions;
+}
+
 struct CxlMemBenchmarkHandoff {
   CxlMemBenchmarkOptions options;
   CxlMemHandshake handshake;
@@ -551,7 +564,7 @@ class CxlMemBenchmarkHotIoShard {
     try {
       folly::setThreadName(folly::to<std::string>("cxl_hot_", index_));
 
-      folly::EventBase evb;
+      folly::EventBase evb(makeHotIoEventBaseOptions(options_));
       eventBase_.store(&evb, std::memory_order_release);
       worker_ = Cpp2Worker::create(&server_, &evb);
       rocketHandler_ = findRocketHandler(&server_);
@@ -564,6 +577,7 @@ class CxlMemBenchmarkHotIoShard {
         evb.loopPollCleanup();
       };
       for (size_t i = 0; i < 4; ++i) {
+        pollEventBaseQueue(evb);
         evb.loopPoll();
       }
 
@@ -572,6 +586,8 @@ class CxlMemBenchmarkHotIoShard {
 
       while (!stopping_.load(std::memory_order_acquire)) {
         bool didWork = drainHandoffs() > 0;
+        didWork = pollEventBaseQueue(evb) || didWork;
+        didWork = pollWorkerReplyQueue() || didWork;
         didWork = pollRegistry_.pollOnce() > 0 || didWork;
         evb.loopPoll();
         if (!didWork) {
@@ -579,10 +595,13 @@ class CxlMemBenchmarkHotIoShard {
         }
       }
       for (size_t i = 0; i < 4; ++i) {
+        pollEventBaseQueue(evb);
+        pollWorkerReplyQueue();
         evb.loopPoll();
       }
       worker_.reset();
       eventBase_.store(nullptr, std::memory_order_release);
+      pollEventBaseQueue(evb);
       evb.loopPoll();
     } catch (...) {
       startupException_ = std::current_exception();
@@ -631,6 +650,23 @@ class CxlMemBenchmarkHotIoShard {
     for (uint32_t i = 0; i < options_.hotSpinPauseIterations; ++i) {
       folly::asm_volatile_pause();
     }
+  }
+
+  bool pollEventBaseQueue(folly::EventBase& evb) const {
+    if (!options_.hotBusyPollEventBase) {
+      return false;
+    }
+    return evb.pollNotificationQueue();
+  }
+
+  bool pollWorkerReplyQueue() const {
+    if (!options_.hotBusyPollEventBase || !worker_) {
+      return false;
+    }
+    auto& replyQueue = worker_->getReplyQueue();
+    auto hadReplies = !replyQueue.empty();
+    replyQueue.drain();
+    return hadReplies;
   }
 
   ThriftServer& server_;
