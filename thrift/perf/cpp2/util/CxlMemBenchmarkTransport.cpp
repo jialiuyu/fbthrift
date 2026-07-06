@@ -17,6 +17,9 @@
 #include <thrift/perf/cpp2/util/CxlMemBenchmarkTransport.h>
 
 #include <folly/Conv.h>
+#include <folly/ExceptionString.h>
+#include <folly/MPMCQueue.h>
+#include <folly/ScopeGuard.h>
 #include <folly/io/IOBuf.h>
 #include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/AsyncTimeout.h>
@@ -24,6 +27,9 @@
 #include <folly/io/async/CxlMemPoller.h>
 #include <folly/io/async/CxlMemRegion.h>
 #include <folly/io/async/fdsock/AsyncFdSocket.h>
+#include <folly/portability/Asm.h>
+#include <folly/synchronization/Baton.h>
+#include <folly/system/ThreadName.h>
 #include <glog/logging.h>
 #include <thrift/lib/cpp2/server/Cpp2Worker.h>
 #include <thrift/lib/cpp2/server/ThriftServer.h>
@@ -37,9 +43,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <exception>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace apache::thrift::perf {
 namespace {
@@ -112,6 +121,10 @@ void validateOptions(const CxlMemBenchmarkOptions& options) {
   }
   if (options.pollIntervalMs == 0) {
     throw std::invalid_argument("CXL mem benchmark requires poll interval");
+  }
+  if (options.handoffQueueCapacity < 2) {
+    throw std::invalid_argument(
+        "CXL mem benchmark handoff queue requires at least two slots");
   }
 }
 
@@ -309,30 +322,77 @@ class CxlMemBenchmarkResources {
   StubDoorbellQueue s2cAck_;
 };
 
+class CxlMemBenchmarkAsyncTransport;
+
+class CxlMemBenchmarkPollRegistry {
+ public:
+  void add(CxlMemBenchmarkAsyncTransport* transport);
+  void remove(CxlMemBenchmarkAsyncTransport* transport);
+  size_t pollOnce();
+
+ private:
+  std::vector<CxlMemBenchmarkAsyncTransport*> transports_;
+};
+
+enum class CxlMemBenchmarkPollMode {
+  ASYNC_TIMEOUT,
+  INLINE,
+};
+
 class CxlMemBenchmarkAsyncTransport final : public StubTransport {
  public:
   CxlMemBenchmarkAsyncTransport(
       folly::EventBase* evb,
       std::shared_ptr<CxlMemBenchmarkResources> resources,
       StubTransport::Config config,
-      StubDoorbellQueue* inboundDataQueue)
+      StubDoorbellQueue* inboundDataQueue,
+      CxlMemBenchmarkPollMode pollMode,
+      CxlMemBenchmarkPollRegistry* pollRegistry)
       : StubTransport(config),
         resources_(std::move(resources)),
+        inboundDataQueue_(inboundDataQueue),
+        pollRegistry_(pollRegistry),
         pollTimeout_(this, evb),
         pollIntervalMs_(resources_->pollIntervalMs()) {
-    folly::CxlMemPollerQueueOptions options;
-    pollHandle_ = poller_.addQueue(
-        evb,
-        inboundDataQueue,
-        [this](uint64_t item) { drainInbound(64, item, true); },
-        options);
-    pollTimeout_.scheduleTimeout(pollIntervalMs_);
+    if (pollMode == CxlMemBenchmarkPollMode::INLINE) {
+      CHECK(pollRegistry_ != nullptr);
+      pollRegistry_->add(this);
+    } else {
+      folly::CxlMemPollerQueueOptions options;
+      pollHandle_ = poller_.addQueue(
+          evb,
+          inboundDataQueue,
+          [this](uint64_t item) { drainInbound(64, item, true); },
+          options);
+      pollTimeout_.scheduleTimeout(pollIntervalMs_);
+    }
   }
 
   ~CxlMemBenchmarkAsyncTransport() override {
+    if (pollRegistry_ != nullptr) {
+      pollRegistry_->remove(this);
+    }
     pollTimeout_.cancelTimeout();
     if (pollHandle_) {
       pollHandle_->close();
+    }
+  }
+
+  bool pollOnceInline() noexcept {
+    try {
+      bool didWork = false;
+      uint64_t item = 0;
+      if (inboundDataQueue_ != nullptr && inboundDataQueue_->pop(&item)) {
+        drainInbound(64, item, true);
+        didWork = true;
+      }
+      flushPendingWrites();
+      return didWork;
+    } catch (...) {
+      LOG(ERROR) << "CXL mem benchmark inline poll failed: "
+                 << folly::exceptionStr(folly::current_exception());
+      closeNow();
+      return true;
     }
   }
 
@@ -353,16 +413,48 @@ class CxlMemBenchmarkAsyncTransport final : public StubTransport {
   };
 
   std::shared_ptr<CxlMemBenchmarkResources> resources_;
+  StubDoorbellQueue* inboundDataQueue_{nullptr};
+  CxlMemBenchmarkPollRegistry* pollRegistry_{nullptr};
   folly::CxlMemPoller<StubBackend> poller_;
   std::shared_ptr<folly::CxlMemPollerQueueHandle<StubBackend>> pollHandle_;
   PollTimeout pollTimeout_;
   uint32_t pollIntervalMs_{1};
 };
 
+void CxlMemBenchmarkPollRegistry::add(
+    CxlMemBenchmarkAsyncTransport* transport) {
+  transports_.push_back(transport);
+}
+
+void CxlMemBenchmarkPollRegistry::remove(
+    CxlMemBenchmarkAsyncTransport* transport) {
+  auto it = std::find(transports_.begin(), transports_.end(), transport);
+  if (it != transports_.end()) {
+    *it = transports_.back();
+    transports_.pop_back();
+  }
+}
+
+size_t CxlMemBenchmarkPollRegistry::pollOnce() {
+  size_t work = 0;
+  for (size_t i = 0; i < transports_.size();) {
+    auto* transport = transports_[i];
+    if (transport->pollOnceInline()) {
+      ++work;
+    }
+    if (i < transports_.size() && transports_[i] == transport) {
+      ++i;
+    }
+  }
+  return work;
+}
+
 folly::AsyncTransport::UniquePtr makeOwnedTransport(
     folly::EventBase* evb,
     std::shared_ptr<CxlMemBenchmarkResources> resources,
-    bool client) {
+    bool client,
+    CxlMemBenchmarkPollMode pollMode,
+    CxlMemBenchmarkPollRegistry* pollRegistry = nullptr) {
   StubDoorbellQueue* inboundDataQueue = client
       ? resources->clientInboundDataQueue()
       : resources->serverInboundDataQueue();
@@ -370,17 +462,272 @@ folly::AsyncTransport::UniquePtr makeOwnedTransport(
       client ? resources->clientConfig(evb) : resources->serverConfig(evb);
   return folly::AsyncTransport::UniquePtr(
       new CxlMemBenchmarkAsyncTransport(
-          evb, std::move(resources), config, inboundDataQueue));
+          evb,
+          std::move(resources),
+          config,
+          inboundDataQueue,
+          pollMode,
+          pollRegistry));
 }
+
+RocketRoutingHandler* findRocketHandler(ThriftServer* server) {
+  for (const auto& handler : *server->getRoutingHandlers()) {
+    auto* rocketHandler = dynamic_cast<RocketRoutingHandler*>(handler.get());
+    if (rocketHandler != nullptr) {
+      return rocketHandler;
+    }
+  }
+  return nullptr;
+}
+
+struct CxlMemBenchmarkHandoff {
+  CxlMemBenchmarkOptions options;
+  CxlMemHandshake handshake;
+  folly::SocketAddress peerAddress;
+  wangle::TransportInfo tinfo;
+};
+
+class CxlMemBenchmarkHotIoShard {
+ public:
+  CxlMemBenchmarkHotIoShard(
+      ThriftServer& server,
+      CxlMemBenchmarkOptions options,
+      size_t index)
+      : server_(server),
+        options_(std::move(options)),
+        index_(index),
+        handoffs_(options_.handoffQueueCapacity),
+        thread_([this] { run(); }) {
+    ready_.wait();
+    if (startupException_) {
+      stopping_.store(true, std::memory_order_release);
+      if (thread_.joinable()) {
+        thread_.join();
+      }
+      std::rethrow_exception(startupException_);
+    }
+  }
+
+  ~CxlMemBenchmarkHotIoShard() {
+    stop();
+  }
+
+  CxlMemBenchmarkHotIoShard(const CxlMemBenchmarkHotIoShard&) = delete;
+  CxlMemBenchmarkHotIoShard& operator=(const CxlMemBenchmarkHotIoShard&) =
+      delete;
+
+  bool submit(CxlMemBenchmarkHandoff handoff) {
+    return handoffs_.write(
+        std::make_unique<CxlMemBenchmarkHandoff>(std::move(handoff)));
+  }
+
+  void stop() {
+    if (stopStarted_.exchange(true, std::memory_order_acq_rel)) {
+      return;
+    }
+    auto* evb = eventBase_.load(std::memory_order_acquire);
+    if (evb != nullptr) {
+      auto worker = worker_;
+      evb->runInEventBaseThread([this, worker] {
+        if (worker) {
+          worker->dropAllConnections();
+        }
+        stopping_.store(true, std::memory_order_release);
+      });
+    } else {
+      stopping_.store(true, std::memory_order_release);
+    }
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+ private:
+  using HandoffQueue =
+      folly::MPMCQueue<std::unique_ptr<CxlMemBenchmarkHandoff>>;
+
+  void run() noexcept {
+    bool readyPosted = false;
+    try {
+      folly::setThreadName(folly::to<std::string>("cxl_hot_", index_));
+
+      folly::EventBase evb;
+      eventBase_.store(&evb, std::memory_order_release);
+      worker_ = Cpp2Worker::create(&server_, &evb);
+      rocketHandler_ = findRocketHandler(&server_);
+      if (rocketHandler_ == nullptr) {
+        throw std::runtime_error("RocketRoutingHandler not found");
+      }
+
+      evb.loopPollSetup();
+      SCOPE_EXIT {
+        evb.loopPollCleanup();
+      };
+      for (size_t i = 0; i < 4; ++i) {
+        evb.loopPoll();
+      }
+
+      ready_.post();
+      readyPosted = true;
+
+      while (!stopping_.load(std::memory_order_acquire)) {
+        bool didWork = drainHandoffs() > 0;
+        didWork = pollRegistry_.pollOnce() > 0 || didWork;
+        evb.loopPoll();
+        if (!didWork) {
+          pauseIdle();
+        }
+      }
+      for (size_t i = 0; i < 4; ++i) {
+        evb.loopPoll();
+      }
+      worker_.reset();
+      eventBase_.store(nullptr, std::memory_order_release);
+      evb.loopPoll();
+    } catch (...) {
+      startupException_ = std::current_exception();
+      if (!readyPosted) {
+        ready_.post();
+      }
+      LOG(ERROR) << "CXL mem benchmark hot IO shard failed: "
+                 << folly::exceptionStr(startupException_);
+    }
+  }
+
+  size_t drainHandoffs() {
+    size_t count = 0;
+    std::unique_ptr<CxlMemBenchmarkHandoff> handoff;
+    while (handoffs_.read(handoff)) {
+      acceptHandoff(std::move(*handoff));
+      handoff.reset();
+      ++count;
+    }
+    return count;
+  }
+
+  void acceptHandoff(CxlMemBenchmarkHandoff handoff) {
+    try {
+      auto resources = std::make_shared<CxlMemBenchmarkResources>(
+          handoff.options, handoff.handshake.connId, false);
+      auto* evb = eventBase_.load(std::memory_order_acquire);
+      auto transport = makeOwnedTransport(
+          evb,
+          std::move(resources),
+          false,
+          CxlMemBenchmarkPollMode::INLINE,
+          &pollRegistry_);
+      rocketHandler_->handleConnection(
+          worker_->getConnectionManager(),
+          std::move(transport),
+          &handoff.peerAddress,
+          handoff.tinfo,
+          worker_);
+    } catch (const std::exception& ex) {
+      LOG(ERROR) << "CXL mem benchmark hot handoff failed: " << ex.what();
+    }
+  }
+
+  void pauseIdle() const {
+    for (uint32_t i = 0; i < options_.hotSpinPauseIterations; ++i) {
+      folly::asm_volatile_pause();
+    }
+  }
+
+  ThriftServer& server_;
+  CxlMemBenchmarkOptions options_;
+  size_t index_{0};
+  HandoffQueue handoffs_;
+  std::thread thread_;
+  folly::Baton<> ready_;
+  std::exception_ptr startupException_;
+  std::atomic<bool> stopping_{false};
+  std::atomic<bool> stopStarted_{false};
+  std::atomic<folly::EventBase*> eventBase_{nullptr};
+  std::shared_ptr<Cpp2Worker> worker_;
+  RocketRoutingHandler* rocketHandler_{nullptr};
+  CxlMemBenchmarkPollRegistry pollRegistry_;
+};
+
+class CxlMemBenchmarkHotIoGroup {
+ public:
+  CxlMemBenchmarkHotIoGroup(
+      ThriftServer& server,
+      CxlMemBenchmarkOptions options)
+      : server_(server), options_(std::move(options)) {
+    validateOptions(options_);
+    size_t shardCount = options_.hotIoThreads;
+    if (shardCount == 0) {
+      shardCount = server_.getNumIOWorkerThreads();
+    }
+    if (shardCount == 0) {
+      shardCount = 1;
+    }
+    shards_.reserve(shardCount);
+    for (size_t i = 0; i < shardCount; ++i) {
+      shards_.push_back(std::make_unique<CxlMemBenchmarkHotIoShard>(
+          server_, options_, i));
+    }
+  }
+
+  ~CxlMemBenchmarkHotIoGroup() {
+    stop();
+  }
+
+  CxlMemBenchmarkHotIoGroup(const CxlMemBenchmarkHotIoGroup&) = delete;
+  CxlMemBenchmarkHotIoGroup& operator=(const CxlMemBenchmarkHotIoGroup&) =
+      delete;
+
+  bool submit(CxlMemBenchmarkHandoff handoff) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (stopping_ || shards_.empty()) {
+      return false;
+    }
+    const size_t shard =
+        getCxlMemBenchmarkHotShard(handoff.handshake.connId, shards_.size());
+    return shards_[shard]->submit(std::move(handoff));
+  }
+
+  void stop() {
+    std::vector<std::unique_ptr<CxlMemBenchmarkHotIoShard>> shards;
+    {
+      std::lock_guard<std::mutex> guard(mutex_);
+      if (stopping_) {
+        return;
+      }
+      stopping_ = true;
+      shards.swap(shards_);
+    }
+    for (auto& shard : shards) {
+      shard->stop();
+    }
+  }
+
+ private:
+  ThriftServer& server_;
+  CxlMemBenchmarkOptions options_;
+  std::mutex mutex_;
+  bool stopping_{false};
+  std::vector<std::unique_ptr<CxlMemBenchmarkHotIoShard>> shards_;
+};
 
 class CxlMemBenchmarkRoutingHandler final : public TransportRoutingHandler {
  public:
   CxlMemBenchmarkRoutingHandler(
-      ThriftServer&,
+      ThriftServer& server,
       CxlMemBenchmarkOptions options)
-      : options_(std::move(options)) {}
+      : server_(server), options_(std::move(options)) {}
 
-  void stopListening() override { listening_ = false; }
+  void stopListening() override {
+    listening_ = false;
+    std::shared_ptr<CxlMemBenchmarkHotIoGroup> hotIoGroup;
+    {
+      std::lock_guard<std::mutex> guard(hotIoGroupMutex_);
+      hotIoGroup.swap(hotIoGroup_);
+    }
+    if (hotIoGroup) {
+      hotIoGroup->stop();
+    }
+  }
 
   bool canAcceptConnection(
       const std::vector<uint8_t>& bytes,
@@ -398,6 +745,8 @@ class CxlMemBenchmarkRoutingHandler final : public TransportRoutingHandler {
       const folly::SocketAddress* peerAddress,
       const wangle::TransportInfo& tinfo,
       std::shared_ptr<Cpp2Worker> worker) override {
+    (void)connectionManager;
+    (void)worker;
     try {
       auto preReceived = sock->takePreReceivedData();
       if (!preReceived) {
@@ -409,22 +758,18 @@ class CxlMemBenchmarkRoutingHandler final : public TransportRoutingHandler {
       options.hwQueuesPerDoorbell = handshake.hwQueuesPerDoorbell;
       validateOptions(options);
 
-      auto resources = std::make_shared<CxlMemBenchmarkResources>(
-          std::move(options), handshake.connId, false);
-      auto* evb = sock->getEventBase();
+      folly::SocketAddress address;
+      if (peerAddress != nullptr) {
+        address = *peerAddress;
+      }
       sock->closeNow();
 
-      auto transport = makeOwnedTransport(evb, std::move(resources), false);
-      auto* rocketHandler = findRocketHandler(worker.get());
-      if (rocketHandler == nullptr) {
-        throw std::runtime_error("RocketRoutingHandler not found");
+      auto hotIoGroup = getHotIoGroup();
+      CxlMemBenchmarkHandoff handoff{
+          std::move(options), handshake, std::move(address), tinfo};
+      if (!hotIoGroup->submit(std::move(handoff))) {
+        throw std::runtime_error("CXL mem benchmark hot handoff queue is full");
       }
-      rocketHandler->handleConnection(
-          connectionManager,
-          std::move(transport),
-          peerAddress,
-          tinfo,
-          std::move(worker));
     } catch (const std::exception& ex) {
       LOG(ERROR) << "CXL mem benchmark server setup failed: " << ex.what();
       sock->closeNow();
@@ -432,18 +777,23 @@ class CxlMemBenchmarkRoutingHandler final : public TransportRoutingHandler {
   }
 
  private:
-  RocketRoutingHandler* findRocketHandler(Cpp2Worker* worker) {
-    for (const auto& handler : *worker->getServer()->getRoutingHandlers()) {
-      auto* rocketHandler = dynamic_cast<RocketRoutingHandler*>(handler.get());
-      if (rocketHandler != nullptr) {
-        return rocketHandler;
-      }
+  std::shared_ptr<CxlMemBenchmarkHotIoGroup> getHotIoGroup() {
+    std::lock_guard<std::mutex> guard(hotIoGroupMutex_);
+    if (!listening_.load()) {
+      throw std::runtime_error("CXL mem benchmark routing handler is stopped");
     }
-    return nullptr;
+    if (!hotIoGroup_) {
+      hotIoGroup_ = std::make_shared<CxlMemBenchmarkHotIoGroup>(
+          server_, options_);
+    }
+    return hotIoGroup_;
   }
 
+  ThriftServer& server_;
   CxlMemBenchmarkOptions options_;
   std::atomic<bool> listening_{true};
+  std::mutex hotIoGroupMutex_;
+  std::shared_ptr<CxlMemBenchmarkHotIoGroup> hotIoGroup_;
 };
 
 } // namespace
@@ -454,6 +804,13 @@ bool isCxlMemBenchmarkTransport(folly::StringPiece transport) {
 
 bool isCxlMemBenchmarkHandshake(const std::vector<uint8_t>& bytes) {
   return isHandshakeBytes(bytes.data(), bytes.size());
+}
+
+size_t getCxlMemBenchmarkHotShard(uint16_t connId, size_t shardCount) {
+  if (shardCount == 0) {
+    throw std::invalid_argument("CXL mem benchmark requires hot IO shards");
+  }
+  return connId % shardCount;
 }
 
 folly::AsyncTransport::UniquePtr tryCreateCxlMemBenchmarkClientTransport(
@@ -473,7 +830,11 @@ folly::AsyncTransport::UniquePtr tryCreateCxlMemBenchmarkClientTransport(
     if (!writeHandshake(evb, addr, encodeHandshake(connId, options))) {
       return nullptr;
     }
-    return makeOwnedTransport(evb, std::move(resources), true);
+    return makeOwnedTransport(
+        evb,
+        std::move(resources),
+        true,
+        CxlMemBenchmarkPollMode::ASYNC_TIMEOUT);
   } catch (const std::exception& ex) {
     LOG(INFO) << "CXL mem benchmark client setup failed: " << ex.what();
     return nullptr;

@@ -149,3 +149,20 @@ target_link_libraries(
   PRIVATE
     ${THRIFT_PERF_CPP2_LINK_TARGET}
 )
+
+if (enable_tests)
+  include(GoogleTest)
+
+  add_executable(
+    CxlMemBenchmarkTransportTest
+    test/CxlMemBenchmarkTransportTest.cpp
+  )
+  target_link_libraries(
+    CxlMemBenchmarkTransportTest
+    PRIVATE
+      thrift_perf_cpp2_common
+      GTest::gtest_main
+      Folly::folly
+  )
+  gtest_discover_tests(CxlMemBenchmarkTransportTest)
+endif()

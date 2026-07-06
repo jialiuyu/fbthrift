@@ -58,6 +58,18 @@ DEFINE_uint32(
     1,
     "HW queues per CXL.mem DATA or ACK doorbell");
 DEFINE_uint32(cxl_mem_poll_interval_ms, 1, "CXL.mem poll interval in ms");
+DEFINE_uint32(
+    cxl_mem_hot_io_threads,
+    0,
+    "CXL.mem hot IO threads (0 means same as --io_threads)");
+DEFINE_uint32(
+    cxl_mem_handoff_queue_capacity,
+    1024,
+    "CXL.mem accepted-connection handoff queue capacity per hot IO thread");
+DEFINE_uint32(
+    cxl_mem_hot_spin_pause_iterations,
+    64,
+    "Pause instructions per idle CXL.mem hot IO loop");
 
 #if THRIFT_PERF_CPP2_ENABLE_HTTP2
 using apache::thrift::HTTP2RoutingHandler;
@@ -81,6 +93,9 @@ apache::thrift::perf::CxlMemBenchmarkOptions cxlMemOptionsFromFlags() {
   options.hwQueuesPerDoorbell =
       static_cast<uint16_t>(FLAGS_cxl_mem_hwqueues_per_doorbell);
   options.pollIntervalMs = FLAGS_cxl_mem_poll_interval_ms;
+  options.hotIoThreads = FLAGS_cxl_mem_hot_io_threads;
+  options.handoffQueueCapacity = FLAGS_cxl_mem_handoff_queue_capacity;
+  options.hotSpinPauseIterations = FLAGS_cxl_mem_hot_spin_pause_iterations;
   return options;
 }
 

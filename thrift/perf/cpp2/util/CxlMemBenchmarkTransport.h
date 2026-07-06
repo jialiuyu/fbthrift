@@ -40,11 +40,15 @@ struct CxlMemBenchmarkOptions {
   size_t payloadSliceSize{1 << 20};
   uint16_t hwQueuesPerDoorbell{1};
   uint32_t pollIntervalMs{1};
+  uint32_t hotIoThreads{0};
+  uint32_t handoffQueueCapacity{1024};
+  uint32_t hotSpinPauseIterations{64};
   bool cacheCoherentMapping{true};
 };
 
 bool isCxlMemBenchmarkTransport(folly::StringPiece transport);
 bool isCxlMemBenchmarkHandshake(const std::vector<uint8_t>& bytes);
+size_t getCxlMemBenchmarkHotShard(uint16_t connId, size_t shardCount);
 
 folly::AsyncTransport::UniquePtr tryCreateCxlMemBenchmarkClientTransport(
     folly::EventBase* evb,
