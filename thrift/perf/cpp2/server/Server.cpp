@@ -20,9 +20,7 @@
 #include <folly/portability/GFlags.h>
 #include <folly/system/HardwareConcurrency.h>
 
-#include <proxygen/httpserver/HTTPServerOptions.h>
 #include <thrift/lib/cpp2/server/ThriftServer.h>
-#include <thrift/lib/cpp2/transport/http2/common/HTTP2RoutingHandler.h>
 #include <thrift/perf/cpp2/server/BenchmarkHandler.h>
 #include <thrift/perf/cpp2/util/QPSStats.h>
 
@@ -38,23 +36,11 @@ DEFINE_int32(cpu_threads, 0, "Number of CPU threads (0 means number of cores)");
 DEFINE_int32(stats_interval_sec, 1, "Seconds between stats");
 DEFINE_int32(terminate_sec, 0, "How long to run server (0 means forever)");
 
-using apache::thrift::HTTP2RoutingHandler;
 using apache::thrift::ThriftServer;
 using apache::thrift::ThriftServerAsyncProcessorFactory;
 using facebook::thrift::benchmarks::BenchmarkHandler;
 using facebook::thrift::benchmarks::QPSStats;
-using proxygen::HTTPServerOptions;
 using std::thread;
-
-std::unique_ptr<HTTP2RoutingHandler> createHTTP2RoutingHandler(
-    std::shared_ptr<ThriftServer> server) {
-  auto h2_options = std::make_unique<HTTPServerOptions>();
-  h2_options->threads = static_cast<size_t>(server->getNumIOWorkerThreads());
-  h2_options->idleTimeout = server->getIdleTimeout();
-  h2_options->shutdownOn = {SIGINT, SIGTERM};
-  return std::make_unique<HTTP2RoutingHandler>(
-      std::move(h2_options), server->getThriftProcessor(), *server);
-}
 
 int main(int argc, char** argv) {
   const folly::Init init(&argc, &argv);
@@ -91,8 +77,6 @@ int main(int argc, char** argv) {
   server->setNumIOWorkerThreads(FLAGS_io_threads);
   server->setNumCPUWorkerThreads(FLAGS_cpu_threads);
   server->setInterface(cpp2PFac);
-
-  server->addRoutingHandler(createHTTP2RoutingHandler(server));
 
   thread logger([&] {
     int32_t elapsedTimeSec = 0;
