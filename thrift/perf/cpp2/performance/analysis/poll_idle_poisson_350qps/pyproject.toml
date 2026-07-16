@@ -1,0 +1,27 @@
+[project]
+name = "poll-idle-poisson-analysis"
+version = "0.1.0"
+description = "Plots for the poll-idle Poisson 350 QPS experiment"
+requires-python = ">=3.11"
+dependencies = [
+  "matplotlib>=3.9,<4",
+]
+
+[project.scripts]
+poll-idle-plot = "poll_idle_analysis:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/poll_idle_analysis.py"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
