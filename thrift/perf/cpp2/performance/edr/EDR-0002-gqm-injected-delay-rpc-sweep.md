@@ -3,7 +3,7 @@ id: EDR-0002
 title: GQM 注入延迟对 Ubmem RPC 的敏感性 sweep
 status: INCONCLUSIVE
 created: 2026-07-21
-updated: 2026-07-21
+updated: 2026-07-22
 folly_branch: agent/codex/cxl-mem-rocket-benchmark
 folly_commit: 1108d3b98255f6ae08dbc98f265011664133ecc6
 fbthrift_branch: agent/codex/cxl-mem-rocket-benchmark
@@ -61,6 +61,9 @@ run、完整 delay 命令、fallback 证据、端点和 push/pop 分解，因此
 - `EDR-0001`，status `REJECTED_IN_ENVELOPE`：研究 CXL hot-shard busy-poll EventBase，
   与本轮都涉及 polling/SHM transport，但 backend、主要变量和 workload 不同，不能作为
   GQM delay 对照。
+- `EDR-0003`，status `INCONCLUSIVE`：使用相同 delay knob 测试 `K=100`
+  fixed-outstanding closed loop。它回答 request-cycle capacity sensitivity，不把闭环斜率或
+  VA FLAT effective exposure 当作本轮 35K open-loop cliff 的阈值。
 - 本轮检索词：`GQM`、`gqm_inject_cost_ns`、`OpenLoopStressTest`、`Unary64`、
   `HwSinglePushOnly`、`HwSinglePopOnly`、`Ubmem`。未找到更早的 GQM latency EDR。
 

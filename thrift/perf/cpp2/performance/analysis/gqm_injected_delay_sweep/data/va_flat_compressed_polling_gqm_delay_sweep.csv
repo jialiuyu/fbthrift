@@ -1,0 +1,10 @@
+suite,workload,inject_ns,multiplier,total_time_s,warmup_s,active_time_s,total_requests,avg_qps,max_outstanding_ops,chunk_size_bytes,latency_p50_us,latency_p90_us,latency_p99_us,latency_p999_us,latency_max_us,source_label
+va_flat_compressed_polling,echo,0,0,15,5,10,500909,50090.9,100,1024,1995.3,1997.2,2021.9,3086.8,100000,baseline
+va_flat_compressed_polling,echo,335,1,15,5,10,481519,48151.9,100,1024,2070.8,2075.6,2103.7,6304.0,100000,1x
+va_flat_compressed_polling,echo,670,2,15,5,10,470144,47014.4,100,1024,2127.6,2130.4,2153.1,6238.0,100000,source said 1x; corrected to 2x from 335ns reference
+va_flat_compressed_polling,echo,1340,4,15,5,10,438841,43884.1,100,1024,2283.9,2287.3,2306.8,4113.6,100000,4x
+va_flat_compressed_polling,echo,3350,10,15,5,10,364059,36405.9,100,1024,2751.2,2760.1,2780.3,3647.6,100000,10x
+va_flat_compressed_polling,echo,6700,20,15,5,10,277416,27741.6,100,1024,3594.4,3612.8,3633.2,9149.6,100000,20x
+va_flat_compressed_polling,echo,13400,40,15,5,10,194220,19422.0,100,1024,5170.3,5237.5,5279.1,5429.3,100000,40x
+va_flat_compressed_polling,echo,33500,100,15,5,10,81287,8128.7,100,1024,12327.3,12407.1,12552.3,13803.8,100000,100x
+va_flat_compressed_polling,echo,67000,200,15,5,10,44118,4411.8,100,1024,22743.6,22827.2,22958.9,24708.8,100000,200x

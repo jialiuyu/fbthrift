@@ -1,0 +1,10 @@
+suite,workload,inject_ns,multiplier,total_time_s,warmup_s,active_time_s,total_requests,avg_qps,max_outstanding_ops,chunk_size_bytes,latency_p50_us,latency_p90_us,latency_p99_us,latency_p999_us,latency_max_us,source_label
+cpp2_closed_loop,noop,0,0,30,20,10,2126000,212600.0,100,,470,476,479,497,100000,baseline
+cpp2_closed_loop,noop,335,1,30,20,10,2128000,212800.0,100,,469,476,479,499,100000,1x
+cpp2_closed_loop,noop,670,2,30,20,10,2115000,211500.0,100,,471,478,480,504,100000,2x
+cpp2_closed_loop,noop,1340,4,30,20,10,2124000,212400.0,100,,470,477,479,508,100000,4x
+cpp2_closed_loop,noop,3350,10,30,20,10,2105000,210500.0,100,,474,479,486,512,100000,10x
+cpp2_closed_loop,noop,6700,20,30,20,10,2064000,206400.0,100,,483,489,495,518,100000,20x
+cpp2_closed_loop,noop,13400,40,30,20,10,2003000,200300.0,100,,498,504,509,541,100000,40x
+cpp2_closed_loop,noop,33500,100,30,20,10,1861000,186100.0,100,,536,540,549,569,100000,100x
+cpp2_closed_loop,noop,67000,200,30,20,10,1661000,166100.0,100,,601,608,610,635,100000,200x

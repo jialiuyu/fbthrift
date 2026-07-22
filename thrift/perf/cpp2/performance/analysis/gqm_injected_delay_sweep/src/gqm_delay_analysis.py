@@ -27,8 +27,8 @@ COLORS = {
     "client": "#2f6f9f",
     "server": "#7a4e9d",
 }
-CLIFF_LOW_US = 13.4
-CLIFF_HIGH_US = 33.5
+CLIFF_LOW_MULTIPLIER = 40
+CLIFF_HIGH_MULTIPLIER = 100
 
 
 @dataclass(frozen=True)
@@ -79,6 +79,48 @@ class MicroResult:
     successful_hw_ops_per_iteration: int
     path: str
     injection_scope: str
+
+
+@dataclass(frozen=True)
+class FixedOutstandingResult:
+    suite: str
+    workload: str
+    inject_ns: int
+    multiplier: int
+    total_time_s: float
+    warmup_s: float
+    active_time_s: float
+    total_requests: int
+    avg_qps: float
+    max_outstanding_ops: int
+    chunk_size_bytes: int | None
+    latency_p50_us: float
+    latency_p90_us: float
+    latency_p99_us: float
+    latency_p999_us: float
+    latency_max_us: float
+    source_label: str
+
+    @property
+    def implied_cycle_us(self) -> float:
+        return self.max_outstanding_ops * 1_000_000.0 / self.avg_qps
+
+    def qps_retention_pct(self, baseline: "FixedOutstandingResult") -> float:
+        return 100.0 * self.avg_qps / baseline.avg_qps
+
+    def effective_exposure(self, baseline: "FixedOutstandingResult") -> float:
+        if self.inject_ns <= 0:
+            raise ValueError("effective exposure is undefined at zero injected delay")
+        return (self.implied_cycle_us - baseline.implied_cycle_us) / (
+            self.inject_ns / 1000.0
+        )
+
+
+@dataclass(frozen=True)
+class CycleSensitivityFit:
+    intercept_us: float
+    slope_us_per_injected_us: float
+    r_squared: float
 
 
 RPC_NUMERIC_FIELDS = {
@@ -146,6 +188,61 @@ def load_micro_results(path: Path) -> list[MicroResult]:
                 )
             )
     return rows
+
+
+def load_fixed_outstanding_results(path: Path) -> list[FixedOutstandingResult]:
+    rows: list[FixedOutstandingResult] = []
+    with path.open(newline="", encoding="utf-8") as source:
+        for raw in csv.DictReader(source):
+            chunk_size = raw.get("chunk_size_bytes", "").strip()
+            rows.append(
+                FixedOutstandingResult(
+                    suite=raw["suite"],
+                    workload=raw["workload"],
+                    inject_ns=int(raw["inject_ns"]),
+                    multiplier=int(raw["multiplier"]),
+                    total_time_s=float(raw["total_time_s"]),
+                    warmup_s=float(raw["warmup_s"]),
+                    active_time_s=float(raw["active_time_s"]),
+                    total_requests=int(raw["total_requests"]),
+                    avg_qps=float(raw["avg_qps"]),
+                    max_outstanding_ops=int(raw["max_outstanding_ops"]),
+                    chunk_size_bytes=int(chunk_size) if chunk_size else None,
+                    latency_p50_us=float(raw["latency_p50_us"]),
+                    latency_p90_us=float(raw["latency_p90_us"]),
+                    latency_p99_us=float(raw["latency_p99_us"]),
+                    latency_p999_us=float(raw["latency_p999_us"]),
+                    latency_max_us=float(raw["latency_max_us"]),
+                    source_label=raw["source_label"],
+                )
+            )
+    return sorted(rows, key=lambda row: row.inject_ns)
+
+
+def fit_cycle_sensitivity(
+    rows: Sequence[FixedOutstandingResult],
+) -> CycleSensitivityFit:
+    if len(rows) < 2:
+        raise ValueError("cycle sensitivity fit requires at least two points")
+    x = [row.inject_ns / 1000.0 for row in rows]
+    y = [row.implied_cycle_us for row in rows]
+    x_mean = sum(x) / len(x)
+    y_mean = sum(y) / len(y)
+    x_variance = sum((value - x_mean) ** 2 for value in x)
+    if x_variance == 0:
+        raise ValueError("cycle sensitivity fit requires distinct delays")
+    slope = sum(
+        (x_value - x_mean) * (y_value - y_mean)
+        for x_value, y_value in zip(x, y)
+    ) / x_variance
+    intercept = y_mean - slope * x_mean
+    residual_sum = sum(
+        (y_value - (intercept + slope * x_value)) ** 2
+        for x_value, y_value in zip(x, y)
+    )
+    total_sum = sum((value - y_mean) ** 2 for value in y)
+    r_squared = 1.0 - residual_sum / total_sum if total_sum else 1.0
+    return CycleSensitivityFit(intercept, slope, r_squared)
 
 
 def latency_cliff_interval(
@@ -301,19 +398,22 @@ def _plot_rpc_saturation(
     return _save_figure(fig, output_dir, "01_rpc_saturation_knee")
 
 
-def _set_delay_x_axis(axis: plt.Axes, rows: Sequence[RpcResult]) -> None:
-    ticks = [row.inject_ns / 1000 for row in rows]
-    axis.set_xscale("symlog", linthresh=0.35, linscale=0.65)
+def _set_multiplier_x_axis(
+    axis: plt.Axes,
+    rows: Sequence[RpcResult | FixedOutstandingResult],
+) -> None:
+    ticks = [row.multiplier for row in rows]
+    axis.set_xscale("symlog", linthresh=1.0, linscale=0.65)
     axis.set_xticks(ticks)
-    axis.set_xticklabels([f"{value:g}" for value in ticks])
-    axis.set_xlim(-0.05, max(ticks) * 1.12)
-    axis.set_xlabel("Configured injected delay (us; symlog)")
+    axis.set_xticklabels([f"{value}x" for value in ticks])
+    axis.set_xlim(-0.15, max(ticks) * 1.12)
+    axis.set_xlabel("Added GQM latency (1x ≈ 335 ns; symlog scale)")
 
 
 def _shade_cliff(axis: plt.Axes) -> None:
     axis.axvspan(
-        CLIFF_LOW_US,
-        CLIFF_HIGH_US,
+        CLIFF_LOW_MULTIPLIER,
+        CLIFF_HIGH_MULTIPLIER,
         color="#e5a54b",
         alpha=0.14,
         zorder=0,
@@ -325,7 +425,7 @@ def _plot_delay_sensitivity(
     rows: Sequence[RpcResult], output_dir: Path
 ) -> list[Path]:
     rows = sorted(rows, key=lambda row: row.inject_ns)
-    x = [row.inject_ns / 1000 for row in rows]
+    x = [row.multiplier for row in rows]
     fig, axes = plt.subplots(
         2,
         1,
@@ -355,7 +455,7 @@ def _plot_delay_sensitivity(
     latency_axis.legend(frameon=False, ncol=3, loc="upper left")
     latency_axis.annotate(
         "p50 = 6.99 ms",
-        (33.5, next(row.latency_p50_us for row in rows if row.inject_ns == 33_500)),
+        (100, next(row.latency_p50_us for row in rows if row.inject_ns == 33_500)),
         xytext=(-8, 12),
         textcoords="offset points",
         ha="right",
@@ -382,7 +482,7 @@ def _plot_delay_sensitivity(
         _style_axis(axis)
         _shade_cliff(axis)
     ratio_axis.legend(frameon=False, loc="upper left")
-    _set_delay_x_axis(ratio_axis, rows)
+    _set_multiplier_x_axis(ratio_axis, rows)
     fig.suptitle(
         f"GQM injected-delay sensitivity at 35k target QPS\n{EXPERIMENT_LABEL}"
     )
@@ -393,7 +493,7 @@ def _plot_delay_capacity(
     rows: Sequence[RpcResult], output_dir: Path
 ) -> list[Path]:
     rows = sorted(rows, key=lambda row: row.inject_ns)
-    x = [row.inject_ns / 1000 for row in rows]
+    x = [row.multiplier for row in rows]
     fig, axes = plt.subplots(
         3,
         1,
@@ -435,7 +535,7 @@ def _plot_delay_capacity(
     last = rows[-1]
     reliability_axis.annotate(
         f"{last.shed_pct:.2f}% shed",
-        (last.inject_ns / 1000, last.shed_pct),
+        (last.multiplier, last.shed_pct),
         xytext=(-6, 6),
         textcoords="offset points",
         ha="right",
@@ -474,7 +574,7 @@ def _plot_delay_capacity(
     for axis in axes:
         _style_axis(axis)
         _shade_cliff(axis)
-    _set_delay_x_axis(cpu_axis, rows)
+    _set_multiplier_x_axis(cpu_axis, rows)
     fig.suptitle(f"GQM delay: capacity and reliability boundary\n{EXPERIMENT_LABEL}")
     return _save_figure(fig, output_dir, "03_gqm_delay_capacity")
 
@@ -538,16 +638,248 @@ def _plot_micro_calibration(
     for axis in axes:
         _style_axis(axis)
     fig.suptitle(
-        "Microbenchmark calibration: delay is visible after successful wrapper operations\n"
+        "Microbenchmark calibration: delay is visible on successful wrapper operations\n"
         "bm_min_iters=100000 | one run per point"
     )
     return _save_figure(fig, output_dir, "04_microbenchmark_calibration")
+
+
+def _plot_cpp2_closed_loop_sensitivity(
+    rows: Sequence[FixedOutstandingResult], output_dir: Path
+) -> list[Path]:
+    rows = sorted(rows, key=lambda row: row.inject_ns)
+    baseline = rows[0]
+    fit = fit_cycle_sensitivity(rows)
+    x = [row.multiplier for row in rows]
+    fig, axes = plt.subplots(
+        2,
+        1,
+        figsize=(12, 8.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": (1.25, 0.9)},
+        constrained_layout=True,
+    )
+    latency_axis, normalized_axis = axes
+
+    metrics = (
+        ("latency_p50_us", "p50", "p50", "o"),
+        ("latency_p99_us", "p99", "p99", "s"),
+        ("latency_p999_us", "p99.9", "p999", "^"),
+    )
+    for field, label, color_key, marker in metrics:
+        latency_axis.plot(
+            x,
+            [getattr(row, field) for row in rows],
+            color=COLORS[color_key],
+            marker=marker,
+            linewidth=1.8,
+            label=label,
+        )
+    latency_axis.plot(
+        x,
+        [row.implied_cycle_us for row in rows],
+        color="#555555",
+        linestyle="--",
+        linewidth=1.4,
+        label="K / QPS implied cycle",
+    )
+    latency_axis.set_ylabel("Latency / cycle time (us)")
+    latency_axis.legend(frameon=False, ncol=4, loc="upper left", fontsize=8)
+    latency_axis.text(
+        0.99,
+        0.07,
+        (
+            f"Cycle fit: {fit.intercept_us:.1f} us + "
+            f"{fit.slope_us_per_injected_us:.2f} us cycle / us injected\n"
+            f"R² = {fit.r_squared:.4f}"
+        ),
+        transform=latency_axis.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=9,
+        color="#444444",
+    )
+
+    normalized_axis.plot(
+        x,
+        [row.qps_retention_pct(baseline) for row in rows],
+        color=COLORS["completed"],
+        marker="o",
+        linewidth=2.0,
+        label="Average QPS / baseline",
+    )
+    normalized_axis.plot(
+        x,
+        [100.0 * row.latency_p99_us / baseline.latency_p99_us for row in rows],
+        color=COLORS["p99"],
+        marker="s",
+        linewidth=1.8,
+        label="p99 / baseline",
+    )
+    normalized_axis.axhline(100.0, color="#777777", linestyle="--", linewidth=1.0)
+    normalized_axis.set_ylabel("Baseline-normalized (%)")
+    normalized_axis.legend(frameon=False, loc="upper left")
+
+    for axis in axes:
+        _style_axis(axis)
+    _set_multiplier_x_axis(normalized_axis, rows)
+    fig.suptitle(
+        "cpp2 closed loop: smooth cycle-time sensitivity, no open-loop cliff\n"
+        "Ubmem | noop | K=100 fixed outstanding | 10s active window | single run"
+    )
+    return _save_figure(fig, output_dir, "05_cpp2_closed_loop_sensitivity")
+
+
+def _plot_va_flat_sensitivity(
+    rows: Sequence[FixedOutstandingResult], output_dir: Path
+) -> list[Path]:
+    rows = sorted(rows, key=lambda row: row.inject_ns)
+    baseline = rows[0]
+    x = [row.multiplier for row in rows]
+    fig, axes = plt.subplots(
+        3,
+        1,
+        figsize=(12, 10.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": (1.2, 0.9, 0.9)},
+        constrained_layout=True,
+    )
+    latency_axis, normalized_axis, exposure_axis = axes
+
+    metrics = (
+        ("latency_p50_us", "p50", "p50", "o"),
+        ("latency_p99_us", "p99", "p99", "s"),
+        ("latency_p999_us", "p99.9 (exploratory)", "p999", "^"),
+    )
+    for field, label, color_key, marker in metrics:
+        latency_axis.plot(
+            x,
+            [getattr(row, field) for row in rows],
+            color=COLORS[color_key],
+            marker=marker,
+            linewidth=1.8,
+            label=label,
+        )
+    latency_axis.set_yscale("log")
+    latency_axis.set_ylabel("RPC latency (us, log scale)")
+    latency_axis.legend(frameon=False, ncol=3, loc="upper left", fontsize=8)
+
+    normalized_axis.plot(
+        x,
+        [row.qps_retention_pct(baseline) for row in rows],
+        color=COLORS["completed"],
+        marker="o",
+        linewidth=2.0,
+        label="Average QPS / baseline",
+    )
+    normalized_axis.plot(
+        x,
+        [100.0 * row.latency_p99_us / baseline.latency_p99_us for row in rows],
+        color=COLORS["p99"],
+        marker="s",
+        linewidth=1.8,
+        label="p99 / baseline",
+    )
+    normalized_axis.axhline(100.0, color="#777777", linestyle="--", linewidth=1.0)
+    normalized_axis.set_yscale("log")
+    normalized_axis.set_ylabel("Baseline-normalized (%, log scale)")
+    normalized_axis.legend(frameon=False, loc="upper left")
+
+    nonzero_rows = [row for row in rows if row.inject_ns]
+    exposure_axis.plot(
+        [row.multiplier for row in nonzero_rows],
+        [row.effective_exposure(baseline) for row in nonzero_rows],
+        color="#7a4e9d",
+        marker="D",
+        linewidth=1.8,
+        label="Δ(K/QPS cycle) / injected delay",
+    )
+    exposure_axis.set_ylabel("Effective injection exposure")
+    exposure_axis.legend(frameon=False, loc="upper left")
+    exposure_axis.text(
+        0.99,
+        0.06,
+        "Effective injection exposure is not an operation count",
+        transform=exposure_axis.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=8,
+        color="#555555",
+    )
+
+    for axis in axes:
+        _style_axis(axis)
+    _set_multiplier_x_axis(exposure_axis, rows)
+    fig.suptitle(
+        "VA FLAT Compressed Polling: sensitivity begins at the first delay point\n"
+        "echo 1KiB | K=100 fixed outstanding | 10s active window | single run"
+    )
+    return _save_figure(
+        fig, output_dir, "06_va_flat_compressed_polling_sensitivity"
+    )
+
+
+def _plot_fixed_outstanding_comparison(
+    closed_loop_rows: Sequence[FixedOutstandingResult],
+    va_flat_rows: Sequence[FixedOutstandingResult],
+    output_dir: Path,
+) -> list[Path]:
+    closed_loop_rows = sorted(closed_loop_rows, key=lambda row: row.inject_ns)
+    va_flat_rows = sorted(va_flat_rows, key=lambda row: row.inject_ns)
+    datasets = (
+        (closed_loop_rows, "cpp2 closed loop / noop", COLORS["p50"], "o"),
+        (va_flat_rows, "VA FLAT compressed polling / echo 1KiB", "#7a4e9d", "D"),
+    )
+    fig, axes = plt.subplots(1, 2, figsize=(13.5, 5.9), constrained_layout=True)
+    throughput_axis, latency_axis = axes
+
+    for rows, label, color, marker in datasets:
+        baseline = rows[0]
+        x = [row.multiplier for row in rows]
+        throughput_axis.plot(
+            x,
+            [row.qps_retention_pct(baseline) for row in rows],
+            color=color,
+            marker=marker,
+            linewidth=2.0,
+            label=label,
+        )
+        latency_axis.plot(
+            x,
+            [row.latency_p99_us / baseline.latency_p99_us for row in rows],
+            color=color,
+            marker=marker,
+            linewidth=2.0,
+            label=label,
+        )
+
+    throughput_axis.axhline(100.0, color="#777777", linestyle="--", linewidth=1.0)
+    throughput_axis.set_ylabel("Average QPS retained (%)")
+    throughput_axis.set_title("Capacity sensitivity")
+    throughput_axis.legend(frameon=False, fontsize=8)
+
+    latency_axis.axhline(1.0, color="#777777", linestyle="--", linewidth=1.0)
+    latency_axis.set_yscale("log")
+    latency_axis.set_ylabel("p99 / 0-delay baseline (log scale)")
+    latency_axis.set_title("Tail-latency sensitivity")
+    latency_axis.legend(frameon=False, fontsize=8)
+
+    for axis in axes:
+        _style_axis(axis)
+        _set_multiplier_x_axis(axis, closed_loop_rows)
+    fig.suptitle(
+        "Same delay knob, very different RPC sensitivity\n"
+        "Both are K=100 fixed-outstanding, single-run sweeps"
+    )
+    return _save_figure(fig, output_dir, "07_fixed_outstanding_comparison")
 
 
 def generate_figures(
     baseline_rows: Sequence[RpcResult],
     delay_rows: Sequence[RpcResult],
     micro_rows: Sequence[MicroResult],
+    closed_loop_rows: Sequence[FixedOutstandingResult],
+    va_flat_rows: Sequence[FixedOutstandingResult],
     output_dir: Path,
 ) -> list[Path]:
     outputs: list[Path] = []
@@ -555,6 +887,13 @@ def generate_figures(
     outputs.extend(_plot_delay_sensitivity(delay_rows, output_dir))
     outputs.extend(_plot_delay_capacity(delay_rows, output_dir))
     outputs.extend(_plot_micro_calibration(micro_rows, output_dir))
+    outputs.extend(_plot_cpp2_closed_loop_sensitivity(closed_loop_rows, output_dir))
+    outputs.extend(_plot_va_flat_sensitivity(va_flat_rows, output_dir))
+    outputs.extend(
+        _plot_fixed_outstanding_comparison(
+            closed_loop_rows, va_flat_rows, output_dir
+        )
+    )
     return outputs
 
 
@@ -577,6 +916,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=project_dir / "data" / "gqm_microbenchmark.csv",
     )
     parser.add_argument(
+        "--closed-loop-input",
+        type=Path,
+        default=project_dir / "data" / "cpp2_closed_loop_gqm_delay_sweep.csv",
+    )
+    parser.add_argument(
+        "--va-flat-input",
+        type=Path,
+        default=(
+            project_dir
+            / "data"
+            / "va_flat_compressed_polling_gqm_delay_sweep.csv"
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=project_dir / "figures",
@@ -586,8 +939,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     baseline_rows = load_rpc_results(args.baseline_input)
     delay_rows = load_rpc_results(args.delay_input)
     micro_rows = load_micro_results(args.micro_input)
+    closed_loop_rows = load_fixed_outstanding_results(args.closed_loop_input)
+    va_flat_rows = load_fixed_outstanding_results(args.va_flat_input)
     for output in generate_figures(
-        baseline_rows, delay_rows, micro_rows, args.output_dir
+        baseline_rows,
+        delay_rows,
+        micro_rows,
+        closed_loop_rows,
+        va_flat_rows,
+        args.output_dir,
     ):
         print(output)
     cliff = latency_cliff_interval(delay_rows)
