@@ -1,0 +1,27 @@
+[project]
+name = "gqm-injected-delay-sweep-analysis"
+version = "0.1.0"
+description = "Reproducible analysis for the GQM injected-delay RPC sweep"
+requires-python = ">=3.11"
+dependencies = [
+  "matplotlib>=3.9,<4",
+]
+
+[project.scripts]
+gqm-delay-plot = "gqm_delay_analysis:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gqm_delay_analysis.py"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
