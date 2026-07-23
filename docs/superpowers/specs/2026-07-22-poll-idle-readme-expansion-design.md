@@ -6,7 +6,8 @@
 从绘图说明扩写为可独立阅读的实验报告，使读者无需打开分析脚本即可了解：
 
 - 实验试图回答的问题；
-- `BUD` 与 `SLEEP` 的 sweep 范围和已知实验 envelope；
+- `Empty-poll budget`（原始字段标签为 `BUD`）与 `sleep interval`（原始字段标签为
+  `SLEEP`）的 sweep 范围和已知实验 envelope；
 - CPU、p50、p99 与 p99.9 的主要观测结果；
 - 当前数据支持哪些结论，以及不能外推什么；
 - 下一轮实验需要补齐哪些证据。
@@ -17,9 +18,10 @@
 
 - 以实验事实和代表数据为主体，机制解释保持克制。
 - 将结论限定在当前一次 350 QPS、15 秒 sweep 内，不表述为跨机器默认配置。
-- 区分“配置值”与“实际运行行为”：`SLEEP` 是配置的 sleep interval，
-  `BUD` 按本实验命名解释为进入 idle sleep 前的 empty-poll budget；当前数据未记录
-  actual sleep duration、time-to-first-idle 或 publish-to-detect latency。
+- 区分“配置值”与“实际运行行为”：`SLEEP` 是配置的 sleep interval；原始 CSV 和
+  图表使用字段标签 `BUD`，本文统一称为 `Empty-poll budget`（空轮询预算），表示进入
+  idle sleep 前允许的 empty-poll 次数。当前数据未记录 actual sleep duration、
+  time-to-first-idle 或 publish-to-detect latency。
 - 只报告 CPU 与 latency 指标，不展开 CSV 中的其他运行状态字段。
 - 保留当前 `uv run` 复现命令和四张既有结果图。
 
@@ -28,7 +30,8 @@
 ### 1. 标题与摘要
 
 标题改为“Poll-idle 在 Poisson 350 QPS 下的 CPU–尾延迟取舍”。摘要说明报告关注低负载下
-`BUD`、`SLEEP` 如何改变 CPU 与尾延迟，以及当前 envelope 中可观察到的取舍点。
+`Empty-poll budget`、`sleep interval` 如何改变 CPU 与尾延迟，以及当前 envelope 中
+可观察到的取舍点。
 
 ### 2. 结论摘要
 
@@ -73,7 +76,7 @@ core pinning 和 CPU 统计窗口，因此不补写无法验证的 provenance。
 
 用这些范围支持“SLEEP 档位对应主要 latency regime”的描述。
 
-### 6. BUD 的 CPU 敏感度
+### 6. Empty-poll budget 的 CPU 敏感度
 
 嵌入 `figures/03_cpu_by_sleep.png` 和 `figures/04_parameter_heatmaps.png`。
 固定 `SLEEP=10 us` 给出完整 BUD 对照表：
