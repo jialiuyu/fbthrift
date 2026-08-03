@@ -434,7 +434,16 @@ unique cells，每点一次正式观测。
 
 ![CPU and tail-latency trade-off across load](figures/11_load_scaling_cpu_p99_pareto.png)
 
+图中在六个负载与线程切片中均直接标出 Poll p99 及其相对 TCP 的降幅。最高已测负载
+`N=8、35K QPS/thread`（约 `280K aggregate QPS`）下，Poll 为 `323.1us`，TCP 为
+`568.2us`，Poll 的 p99 低 `43.1%`。
+Poll 的 Total CPU 为 `15.813 cores`，高于 TCP 的 `7.498 cores`，因此这里突出的是
+最低 p99 能力，而不是双指标优劣。二者均维持约 `280K QPS`；这是最高已测吞吐，不是
+测得的 capacity ceiling。
+
 ![Backoff interval response](figures/12_backoff_interval_response.png)
+
+两个 p99 panel 均直接标出三档负载对应的 Poll p99。
 
 #### Periodic backoff 的路径响应
 
@@ -460,6 +469,11 @@ p99(W_request + W_response) = (2 - sqrt(0.02)) * T ~= 1.859 * T
 
 紫色五角星曲线是 TCP busy-poll 对照边界；浅红区域表示同一负载下 p99 或每百万 RPC
 的 CPU cost 高于 TCP。Ubmem 的轮询策略和 backoff interval 直接标注在对应曲线上。
+两个 p99 panel 均直接标出三档负载的 Poll p99 及其相对 TCP 的降幅；`N=8` 的最高负载
+端点另以虚线标出 Poll 与 TCP 的 p99 绝对值，避免线性坐标轴压缩约 `280K QPS` 下的
+差异。这些数值仍按相同 workload、线程数和 offered load 比较，不混用不同切片的独立
+极值。最高负载下 Poll 的 `323.1us` 相对 TCP 的 `568.2us` 降低 `43.1%`；这里只突出
+p99 单指标极值，不作双指标优劣判断。
 
 | Load/thread | N | TCP：p99 / Total CPU | Ubmem 10us | Ubmem 100us |
 | ---: | ---: | ---: | ---: | ---: |
@@ -471,7 +485,7 @@ p99(W_request + W_response) = (2 - sqrt(0.02)) * T ~= 1.859 * T
 | 35K | 8 | 568.2us / 7.498 cores | 371.1us / 8.335 | 466.7us / 7.077 |
 
 低负载下，TCP 以接近长 backoff 的 CPU 达到接近短 backoff 的 p99；在
-`N=8,35K QPS/thread` 时，Ubmem 100us 的 p99 和 Total CPU 又同时低于 TCP。这个
+`N=8,35K QPS/thread` 时，Poll 的 p99 比 TCP 低 `43.1%`，但需要更高 CPU。这个
 crossover 支持“空闲时 notification、繁忙时 polling”的负载分区，但 TCP 不是同一 Ubmem
 路径上的 IRQ 实现。
 
@@ -481,7 +495,8 @@ crossover 支持“空闲时 notification、繁忙时 polling”的负载分区�
 
 Panel (a) 的 `1.0x` 虚线不是 busy-poll baseline，而是
 `p99(N=8)=p99(N=1)` 的无 scale-out amplification 参考线；Panel (b) 的虚线表示
-`100%` completion，`10ms` 柱上直接标注了 `N=1/N=8` 的完成比例。
+`100%` completion，并直接标注 Poll 完成约 `35.0K/280.3K QPS`，而 `10ms` backoff
+仅完成约 `19.9K/159.1K QPS`（`N=1/N=8`）。
 
 Ubmem `10us/100us` 的 p99 `N=8/N=1` amplification 约为 `0.99–1.01x`；TCP 在每线程
 10K/35K 时分别为 `1.42x/1.35x`。当前 private queue-pair backoff sensitivity 没有随
