@@ -4,6 +4,7 @@ import argparse
 import csv
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from statistics import mean, stdev
 from typing import Sequence
 
 import matplotlib
@@ -20,6 +21,7 @@ CONCURRENCIES = (1, 4, 16, 64, 128, 256, 512, 1024, 2048)
 @dataclass(frozen=True)
 class Measurement:
     source_index: int
+    repeat_id: int
     value: str
     concurrency: int
     payload_bytes: int
@@ -56,6 +58,10 @@ class DerivedMeasurement:
     server_rss_kb: int
     retry: int
     status: str
+    sample_count: int
+    tps_stddev: float
+    tp99_stddev_us: float
+    tp999_stddev_us: float
     payload_peak_tps: float
     payload_peak_concurrency: int
     tps_vs_payload_peak_pct: float
@@ -72,7 +78,9 @@ def load_measurements(path: Path) -> list[Measurement]:
         for raw in csv.DictReader(source):
             rows.append(
                 Measurement(
-                    source_index=int(raw["source_index"]), value=raw["value"],
+                    source_index=int(raw["source_index"]),
+                    repeat_id=1 if int(raw["source_index"]) <= 63 else 2,
+                    value=raw["value"],
                     concurrency=int(raw["concurrency"]), payload_bytes=int(raw["payload_bytes"]),
                     target_qps=int(raw["target_qps"]), cost_reported=raw["cost_reported"],
                     tps=float(raw["tps_kops"]) * 1000.0, tp99_us=float(raw["tp99_us"]),
@@ -85,40 +93,65 @@ def load_measurements(path: Path) -> list[Measurement]:
 
 
 def derive_measurements(rows: Sequence[Measurement]) -> list[DerivedMeasurement]:
-    by_cell = {(row.payload_bytes, row.concurrency): row for row in rows}
+    grouped: dict[tuple[int, int], list[Measurement]] = {}
+    for row in rows:
+        grouped.setdefault((row.payload_bytes, row.concurrency), []).append(row)
     expected = {(p, c) for p in PAYLOADS for c in CONCURRENCIES}
-    missing = sorted(expected - set(by_cell))
-    if missing or len(rows) != len(by_cell):
+    missing = sorted(expected - set(grouped))
+    if missing:
         raise ValueError(f"incomplete or duplicate matrix: missing={missing}")
+
+    def stats(payload: int, concurrency: int) -> dict[str, float]:
+        samples = grouped[(payload, concurrency)]
+        result: dict[str, float] = {"sample_count": float(len(samples))}
+        for field in (
+            "tps", "tp99_us", "tp999_us", "client_cpu_pct", "server_cpu_pct",
+            "client_rss_kb", "server_rss_kb",
+        ):
+            values = [float(getattr(sample, field)) for sample in samples]
+            result[field] = mean(values)
+            result[f"{field}_stddev"] = stdev(values) if len(values) >= 2 else 0.0
+        return result
+
+    cell_stats = {(p, c): stats(p, c) for p in PAYLOADS for c in CONCURRENCIES}
     peaks = {
-        payload: max((by_cell[(payload, c)] for c in CONCURRENCIES), key=lambda row: row.tps)
+        payload: max(CONCURRENCIES, key=lambda c: cell_stats[(payload, c)]["tps"])
         for payload in PAYLOADS
     }
     derived: list[DerivedMeasurement] = []
-    for row in sorted(rows, key=lambda item: (item.payload_bytes, item.concurrency)):
-        peak = peaks[row.payload_bytes]
-        zero_payload = by_cell[(0, row.concurrency)]
-        c64 = by_cell[(row.payload_bytes, 64)]
-        position = CONCURRENCIES.index(row.concurrency)
-        previous = None if position == 0 else by_cell[(row.payload_bytes, CONCURRENCIES[position - 1])]
-        total_cpu = row.client_cpu_pct + row.server_cpu_pct
+    for payload in PAYLOADS:
+      for concurrency in CONCURRENCIES:
+        samples = grouped[(payload, concurrency)]
+        row = samples[0]
+        current = cell_stats[(payload, concurrency)]
+        peak_concurrency = peaks[payload]
+        peak = cell_stats[(payload, peak_concurrency)]
+        zero_payload = cell_stats[(0, concurrency)]
+        c64 = cell_stats[(payload, 64)]
+        position = CONCURRENCIES.index(concurrency)
+        previous = None if position == 0 else cell_stats[(payload, CONCURRENCIES[position - 1])]
+        total_cpu = current["client_cpu_pct"] + current["server_cpu_pct"]
         used_cores = total_cpu / 100.0
         derived.append(
             DerivedMeasurement(
-                source_index=row.source_index, value=row.value, concurrency=row.concurrency,
-                payload_bytes=row.payload_bytes, target_qps=row.target_qps, cost_reported=row.cost_reported,
-                tps=row.tps, tp99_us=row.tp99_us, tp999_us=row.tp999_us,
-                client_cpu_pct=row.client_cpu_pct, server_cpu_pct=row.server_cpu_pct,
+                source_index=min(sample.source_index for sample in samples), value=row.value,
+                concurrency=concurrency, payload_bytes=payload, target_qps=row.target_qps,
+                cost_reported=row.cost_reported, tps=current["tps"], tp99_us=current["tp99_us"],
+                tp999_us=current["tp999_us"], client_cpu_pct=current["client_cpu_pct"],
+                server_cpu_pct=current["server_cpu_pct"],
                 total_cpu_pct=total_cpu, estimated_used_cores=used_cores,
-                tps_per_used_core=row.tps / used_cores, client_rss_kb=row.client_rss_kb,
-                server_rss_kb=row.server_rss_kb, retry=row.retry, status=row.status,
-                payload_peak_tps=peak.tps, payload_peak_concurrency=peak.concurrency,
-                tps_vs_payload_peak_pct=100.0 * row.tps / peak.tps,
-                tps_retention_vs_zero_payload_pct=100.0 * row.tps / zero_payload.tps,
-                tp99_amplification_vs_c64=row.tp99_us / c64.tp99_us,
-                tp999_amplification_vs_c64=row.tp999_us / c64.tp999_us,
-                tps_gain_vs_previous_concurrency_pct=(None if previous is None else 100.0 * (row.tps / previous.tps - 1.0)),
-                tp99_change_vs_previous_concurrency_pct=(None if previous is None else 100.0 * (row.tp99_us / previous.tp99_us - 1.0)),
+                tps_per_used_core=current["tps"] / used_cores,
+                client_rss_kb=current["client_rss_kb"], server_rss_kb=current["server_rss_kb"],
+                retry=max(sample.retry for sample in samples), status="OK",
+                sample_count=len(samples), tps_stddev=current["tps_stddev"],
+                tp99_stddev_us=current["tp99_us_stddev"], tp999_stddev_us=current["tp999_us_stddev"],
+                payload_peak_tps=peak["tps"], payload_peak_concurrency=peak_concurrency,
+                tps_vs_payload_peak_pct=100.0 * current["tps"] / peak["tps"],
+                tps_retention_vs_zero_payload_pct=100.0 * current["tps"] / zero_payload["tps"],
+                tp99_amplification_vs_c64=current["tp99_us"] / c64["tp99_us"],
+                tp999_amplification_vs_c64=current["tp999_us"] / c64["tp999_us"],
+                tps_gain_vs_previous_concurrency_pct=(None if previous is None else 100.0 * (current["tps"] / previous["tps"] - 1.0)),
+                tp99_change_vs_previous_concurrency_pct=(None if previous is None else 100.0 * (current["tp99_us"] / previous["tp99_us"] - 1.0)),
             )
         )
     return derived
@@ -191,10 +224,17 @@ def _plot_scaling(rows: Sequence[DerivedMeasurement], output_dir: Path) -> list[
     markers = ("o", "s", "^", "D", "v", "P", "X")
     for index, payload in enumerate(PAYLOADS):
         series = [next(row for row in rows if row.payload_bytes == payload and row.concurrency == c) for c in CONCURRENCIES]
+        repeated = max(row.sample_count for row in series) >= 2
         style = {"color": colors[index], "marker": markers[index], "linewidth": 1.7,
-                 "markersize": 4.8, "label": f"Payload = {payload} B"}
-        axes[0].plot(x, [row.tps / 1000.0 for row in series], **style)
-        axes[1].plot(x, [row.tp99_us for row in series], **style)
+                 "markersize": 4.8, "label": f"Payload = {payload} B" + (" (n=2)" if repeated else "")}
+        if repeated:
+            axes[0].errorbar(x, [row.tps / 1000.0 for row in series],
+                             yerr=[row.tps_stddev / 1000.0 for row in series], capsize=3, **style)
+            axes[1].errorbar(x, [row.tp99_us for row in series],
+                             yerr=[row.tp99_stddev_us for row in series], capsize=3, **style)
+        else:
+            axes[0].plot(x, [row.tps / 1000.0 for row in series], **style)
+            axes[1].plot(x, [row.tp99_us for row in series], **style)
     axes[0].set_title("Achieved throughput")
     axes[1].set_title("TP99 latency")
     axes[0].set_ylabel("TPS (Kops/s)")
@@ -204,7 +244,19 @@ def _plot_scaling(rows: Sequence[DerivedMeasurement], output_dir: Path) -> list[
         axis.set_xticks(x, [str(value) for value in CONCURRENCIES], rotation=20)
         axis.set_xlabel("Closed-loop concurrency")
         axis.grid(True, axis="y")
-    axes[0].legend(loc="upper left", frameon=True, framealpha=0.92, ncol=2)
+    handles, labels = axes[0].get_legend_handles_labels()
+    order = sorted(
+        range(len(labels)),
+        key=lambda index: PAYLOADS.index(int(labels[index].split()[2])),
+    )
+    axes[0].legend(
+        [handles[index] for index in order],
+        [labels[index] for index in order],
+        loc="upper left",
+        frameon=True,
+        framealpha=0.92,
+        ncol=2,
+    )
     fig.suptitle("Netpoll Ubmem Concurrency Scaling", fontweight="bold")
     return _save(fig, output_dir, "02_ubmem_concurrency_scaling_by_payload")
 
