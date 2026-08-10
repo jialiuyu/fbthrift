@@ -1,0 +1,27 @@
+[project]
+name = "netpoll-gqm-latency-concurrency-analysis"
+version = "0.1.0"
+description = "Analysis and academic plots for the Netpoll GQM latency by concurrency sweep"
+requires-python = ">=3.11"
+dependencies = [
+  "matplotlib>=3.9,<4",
+]
+
+[project.scripts]
+netpoll-gqm-concurrency-plot = "netpoll_gqm_latency_concurrency_analysis:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/netpoll_gqm_latency_concurrency_analysis.py"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
