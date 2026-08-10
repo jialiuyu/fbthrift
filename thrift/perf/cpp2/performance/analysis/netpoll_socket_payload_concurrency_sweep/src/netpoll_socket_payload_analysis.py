@@ -240,7 +240,11 @@ def _plot_surface(rows: Sequence[DerivedMeasurement], output_dir: Path) -> list[
                     fontsize=7.2,
                     color="white" if value > midpoint else "#202020",
                 )
-    fig.suptitle("Netpoll Socket Baseline Surface", fontweight="bold")
+    fig.suptitle(
+        "Netpoll Socket Baseline Surface\nPayload sweep: 0–3350 B",
+        fontweight="bold",
+        linespacing=1.35,
+    )
     return _save(fig, output_dir, "01_socket_payload_concurrency_surface")
 
 
@@ -270,7 +274,11 @@ def _plot_scaling(rows: Sequence[DerivedMeasurement], output_dir: Path) -> list[
         axis.set_xlabel("Closed-loop concurrency")
         axis.grid(True, axis="y")
     axes[0].legend(loc="upper left", frameon=True, framealpha=0.92, ncol=2)
-    fig.suptitle("Netpoll Socket Concurrency Scaling", fontweight="bold")
+    fig.suptitle(
+        "Netpoll Socket Concurrency Scaling\nPayload sweep: 0–3350 B",
+        fontweight="bold",
+        linespacing=1.35,
+    )
     return _save(fig, output_dir, "02_socket_concurrency_scaling_by_payload")
 
 

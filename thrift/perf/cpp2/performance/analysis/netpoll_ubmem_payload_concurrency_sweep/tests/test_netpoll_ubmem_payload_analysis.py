@@ -79,8 +79,10 @@ def test_generation_emits_lf_csv_and_two_complete_figures(tmp_path: Path) -> Non
     assert "Netpoll Ubmem Baseline Surface" in surface
     assert "Throughput (Kops/s)" in surface
     assert "TP99 (µs)" in surface
+    assert "Payload sweep: 0–3350 B" in surface
     assert "Netpoll Ubmem Concurrency Scaling" in scaling
     assert "Payload = 3350 B" in scaling
     assert "Payload = 0 B (n=2)" in scaling
+    assert "Payload sweep: 0–3350 B" in scaling
     assert all(line == line.rstrip() for line in surface.splitlines())
     assert all(line == line.rstrip() for line in scaling.splitlines())

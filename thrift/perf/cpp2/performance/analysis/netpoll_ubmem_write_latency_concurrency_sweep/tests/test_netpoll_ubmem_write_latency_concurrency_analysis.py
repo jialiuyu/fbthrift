@@ -1,8 +1,10 @@
 from pathlib import Path
 
 import pytest
+from matplotlib.figure import Figure
 
 from netpoll_ubmem_write_latency_concurrency_analysis import (
+    _add_figure_heading,
     derive_measurements,
     generate_figures,
     load_measurements,
@@ -16,6 +18,17 @@ DATA_PATH = (
     / "data"
     / "netpoll_ubmem_write_latency_concurrency_raw_20260810.csv"
 )
+
+
+def test_figure_heading_keeps_payload_inside_layout_managed_suptitle() -> None:
+    figure = Figure()
+
+    _add_figure_heading(figure, "Experiment title")
+
+    assert figure._suptitle is not None
+    assert figure._suptitle.get_text() == (
+        "Experiment title\nPayload: 1 KiB (1024 B)"
+    )
 
 
 def test_raw_archive_contains_the_complete_42_cell_matrix() -> None:
@@ -110,9 +123,11 @@ def test_generation_emits_derived_csv_and_two_separate_academic_figures(
     assert "TPS retained" in sensitivity_svg
     assert "TP99 amplification" in sensitivity_svg
     assert "Concurrency = 512" in sensitivity_svg
+    assert "Payload: 1 KiB (1024 B)" in sensitivity_svg
     assert "Concurrency Scaling Under Added Ubmem Write Latency" in scaling_svg
     assert "TPS (Kops/s)" in scaling_svg
     assert "TP99 (µs)" in scaling_svg
     assert "10× (7160 ns)" in scaling_svg
+    assert "Payload: 1 KiB (1024 B)" in scaling_svg
     assert all(line == line.rstrip() for line in sensitivity_svg.splitlines())
     assert all(line == line.rstrip() for line in scaling_svg.splitlines())

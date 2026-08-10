@@ -18,6 +18,7 @@ REFERENCE_NS = 716
 CONCURRENCIES = (1, 4, 16, 64, 256, 512)
 COSTS_NS = (0, 179, 358, 716, 1432, 2864, 7160)
 MULTIPLIER_LABELS = ("0×", "1/4×", "1/2×", "1×", "2×", "4×", "10×")
+PAYLOAD_LABEL = "Payload: 1 KiB (1024 B)"
 COLORS = {
     1: "#4477AA",
     4: "#66CCEE",
@@ -208,6 +209,14 @@ def _save(fig: plt.Figure, output_dir: Path, stem: str) -> list[Path]:
     return outputs
 
 
+def _add_figure_heading(fig: plt.Figure, title: str) -> None:
+    fig.suptitle(
+        f"{title}\n{PAYLOAD_LABEL}",
+        fontweight="bold",
+        linespacing=1.35,
+    )
+
+
 def _series_for_concurrency(
     rows: Sequence[DerivedMeasurement], concurrency: int
 ) -> list[DerivedMeasurement]:
@@ -253,7 +262,7 @@ def _plot_sensitivity(
         axis.set_xlabel("Added Ubmem write latency (716 ns = 1×)")
         axis.grid(True, axis="y")
     axes[0].legend(loc="lower left", frameon=True, framealpha=0.94, ncol=2)
-    fig.suptitle("Ubmem Write-Latency Sensitivity", fontweight="bold")
+    _add_figure_heading(fig, "Ubmem Write-Latency Sensitivity")
     return _save(
         fig, output_dir, "01_ubmem_write_latency_sensitivity_by_concurrency"
     )
@@ -310,9 +319,9 @@ def _plot_scaling(
         columnspacing=0.9,
         handlelength=1.8,
     )
-    fig.suptitle(
+    _add_figure_heading(
+        fig,
         "Concurrency Scaling Under Added Ubmem Write Latency",
-        fontweight="bold",
     )
     return _save(
         fig, output_dir, "02_concurrency_scaling_under_ubmem_write_latency"

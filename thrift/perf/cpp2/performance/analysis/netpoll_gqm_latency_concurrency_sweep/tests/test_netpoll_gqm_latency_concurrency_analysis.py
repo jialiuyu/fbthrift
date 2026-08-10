@@ -80,9 +80,11 @@ def test_generation_emits_derived_csv_and_two_separate_academic_figures(
     assert "TPS retained" in sensitivity_svg
     assert "TP99 amplification" in sensitivity_svg
     assert "Concurrency = 128" in sensitivity_svg
+    assert "Payload: 1 KiB (1024 B)" in sensitivity_svg
     assert "Concurrency Scaling Under Added GQM Latency" in scaling_svg
     assert "TPS (Kops/s)" in scaling_svg
     assert "TP99 (µs)" in scaling_svg
     assert "10× (3350 ns)" in scaling_svg
+    assert "Payload: 1 KiB (1024 B)" in scaling_svg
     assert all(line == line.rstrip() for line in sensitivity_svg.splitlines())
     assert all(line == line.rstrip() for line in scaling_svg.splitlines())

@@ -247,7 +247,11 @@ def _plot_sensitivity(
         axis.set_xlabel("Added GQM latency (335 ns = 1×)")
         axis.grid(True, axis="y")
     axes[0].legend(loc="upper right", frameon=True, framealpha=0.92)
-    fig.suptitle("Netpoll GQM-Latency Sensitivity", fontweight="bold")
+    fig.suptitle(
+        "Netpoll GQM-Latency Sensitivity\nPayload: 1 KiB (1024 B)",
+        fontweight="bold",
+        linespacing=1.35,
+    )
     return _save(fig, output_dir, "01_gqm_latency_sensitivity_by_concurrency")
 
 
@@ -301,7 +305,10 @@ def _plot_scaling(
         handlelength=1.8,
     )
     fig.suptitle(
-        "Concurrency Scaling Under Added GQM Latency", fontweight="bold"
+        "Concurrency Scaling Under Added GQM Latency\n"
+        "Payload: 1 KiB (1024 B)",
+        fontweight="bold",
+        linespacing=1.35,
     )
     return _save(fig, output_dir, "02_concurrency_scaling_under_gqm_latency")
 

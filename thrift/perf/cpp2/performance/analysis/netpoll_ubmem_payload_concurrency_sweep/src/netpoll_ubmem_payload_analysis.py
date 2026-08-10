@@ -213,7 +213,11 @@ def _plot_surface(rows: Sequence[DerivedMeasurement], output_dir: Path) -> list[
                 label = f"{value:.1f}" if title.startswith("Throughput") else f"{value:,.0f}"
                 axis.text(column_index, row_index, label, ha="center", va="center", fontsize=7.2,
                           color="white" if value > midpoint else "#202020")
-    fig.suptitle("Netpoll Ubmem Baseline Surface", fontweight="bold")
+    fig.suptitle(
+        "Netpoll Ubmem Baseline Surface\nPayload sweep: 0–3350 B",
+        fontweight="bold",
+        linespacing=1.35,
+    )
     return _save(fig, output_dir, "01_ubmem_payload_concurrency_surface")
 
 
@@ -257,7 +261,11 @@ def _plot_scaling(rows: Sequence[DerivedMeasurement], output_dir: Path) -> list[
         framealpha=0.92,
         ncol=2,
     )
-    fig.suptitle("Netpoll Ubmem Concurrency Scaling", fontweight="bold")
+    fig.suptitle(
+        "Netpoll Ubmem Concurrency Scaling\nPayload sweep: 0–3350 B",
+        fontweight="bold",
+        linespacing=1.35,
+    )
     return _save(fig, output_dir, "02_ubmem_concurrency_scaling_by_payload")
 
 
