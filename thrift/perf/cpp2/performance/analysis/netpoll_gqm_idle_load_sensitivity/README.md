@@ -2,13 +2,16 @@
 
 ## 基本结论
 
-本报告保留 `5 QPS × 5 BUD × 5 Sleep` 的 125 个 GQM 原始配置，并加入同一
+本报告保留 `5 load × 5 BUD × 5 Sleep` 的 125 个 GQM 原始配置，并加入同一
 `Concurrency=128`、`Payload=1 KiB` 下的 5 个 Netpoll Socket 锚点。Socket 在
-`7.7K/77K/192.5K` 三档维持目标，在 `385K` 只达到 `98.94%`，在 `731.5K` 只达到
+`1%/10%/25%` 三档维持目标，在 `50% load` 只达到 `98.94%`，在 `95% load` 只达到
 `52.17%`。因此它能补充低中负载下的事件驱动 CPU–P99 参照，但不能覆盖高负载 capacity。
 
+负载相对无 idle 最大能力归一化：`770K TPS = 100% load`，五档依次为
+`1%、10%、25%、50%、95%`。绝对 target 和实测 TPS 继续保留在原始及派生 CSV 中。
+
 用户确认 `BUD=0` 与 `BUD=256` 因配置失误实际执行的是同一个策略。两组结果仍逐行保留，
-但联合 Pareto 和 P99-SLO 边界将它们视为每个 `QPS × Sleep` 的两次重复：中心取均值，
+但联合 Pareto 和 P99-SLO 边界将它们视为每个 `load × Sleep` 的两次重复：中心取均值，
 whisker 显示两次 min–max，且两次都达到 `99.5%` 才进入合格候选。这个修正删除了此前由
 重复波动造成的伪策略切换。
 
@@ -20,7 +23,8 @@ software stack；它能显示“现有软件 idle 与事件驱动路径之间仍
 
 | 维度 | 取值 |
 |---|---|
-| Target QPS | `7.7K, 77K, 192.5K, 385K, 731.5K` |
+| 归一化负载 | `1%, 10%, 25%, 50%, 95%` |
+| 100% load 定义 | 无 idle 最大能力 `770K TPS` |
 | BUD | `0, 1, 16, 256, 1024` |
 | Sleep | `1us, 10us, 100us, 1ms, 10ms` |
 | 策略应用 | Server/Client 对称使用相同 BUD 与 Sleep |
@@ -30,7 +34,7 @@ software stack；它能显示“现有软件 idle 与事件驱动路径之间仍
 | Concurrency | `128` |
 | Payload | `1024 B` |
 | 完整性 | `124` 个完整点，`1` 个部分点 |
-| Socket 对照 | 同五档 target QPS，各 `1` 次结果 |
+| Socket 对照 | 同五档归一化负载，各 `1` 次结果 |
 
 图表把原始重复 tuple 压缩为单值 `BUD` 和 `Sleep`。其中 `BUD=0/256` 是同一有效配置的
 两次重复，不再作为两个策略比较。派生指标为：
@@ -51,27 +55,27 @@ vCPU-equivalents；它不是单个线程的占用，也不能据此判断物理�
 
 ## GQM 原始矩阵的负载级汇总
 
-| Target QPS | 完整点 | 维持目标 | 最大 TPS | 最大 Attainment | p99 范围 | Total CPU 范围 |
+| Load | 完整点 | 维持目标 | 最大 TPS | 最大 Attainment | p99 范围 | Total CPU 范围 |
 |---:|---:|---:|---:|---:|---:|---:|
-| 7.7K | 25 | 25 | 7.7K | 100.00% | 20us–19.45ms | 0.112–3.993 cores |
-| 77K | 25 | 20 | 77.0K | 100.00% | 30us–20.59ms | 0.268–8.809 cores |
-| 192.5K | 25 | 10 | 192.5K | 100.00% | 50us–11.31ms | 0.268–8.696 cores |
-| 385K | 25 | 10 | 384.3K | 99.82% | 330us–11.07ms | 0.266–11.726 cores |
-| 731.5K | 24+1 partial | 0 | 707.5K | 96.72% | 410us–10.58ms | 0.269–14.820 cores |
+| 1% | 25 | 25 | 7.7K | 100.00% | 20us–19.45ms | 0.112–3.993 cores |
+| 10% | 25 | 20 | 77.0K | 100.00% | 30us–20.59ms | 0.268–8.809 cores |
+| 25% | 25 | 10 | 192.5K | 100.00% | 50us–11.31ms | 0.268–8.696 cores |
+| 50% | 25 | 10 | 384.3K | 99.82% | 330us–11.07ms | 0.266–11.726 cores |
+| 95% | 24+1 partial | 0 | 707.5K | 96.72% | 410us–10.58ms | 0.269–14.820 cores |
 
 ### `BUD=0/256` 偶然重复的一致性
 
-25 对 `(QPS, Sleep)` 的 gate 分类全部一致：15 对共同通过，10 对共同未通过。在共同通过
+25 对 `(load, Sleep)` 的 gate 分类全部一致：15 对共同通过，10 对共同未通过。在共同通过
 的 15 对中，以两次均值为分母计算对称相对差：
 
 | 指标 | 中位数 | P90 | 最大值 | 解释 |
 |---|---:|---:|---:|---|
 | TPS | 0.00% | 0.05% | 0.10% | 吞吐与 gate 高度可重复 |
 | P99 | 0.76% | 15.38% | 16.67% | 绝对差中位数为 10us，受计量粒度影响 |
-| Total CPU | 1.56% | 6.85% | 50.03% | 最大点为 `7.7K/S10us` 的 `3.006 vs 1.803 cores` |
+| Total CPU | 1.56% | 6.85% | 50.03% | 最大点为 `1% load/S10us` 的 `3.006 vs 1.803 cores` |
 | P99.9 | 2.93% | 113.58% | 132.47% | 极端尾部单次波动大，不应用于精细策略排序 |
 
-去掉 `7.7K/S10us` 这一 CPU 离群对后，其余共同通过点的 CPU 相对差均值为 `2.46%`、最大
+去掉 `1% load/S10us` 这一 CPU 离群对后，其余共同通过点的 CPU 相对差均值为 `2.46%`、最大
 为 `6.85%`。因此，这批偶然重复足以证明 `BUD=0/256` 不应被解释为两个性能策略，并支持
 TPS/gate 的重复性；它不支持把低负载 CPU 或 p99.9 的细小差异写成稳定结论。
 
@@ -86,27 +90,27 @@ TPS/gate 的重复性；它不支持把低负载 CPU 或 p99.9 的细小差异�
 
 Socket 五个锚点的原始结果为：
 
-| Target | TPS | Attainment | p99 | p99.9 | Total CPU | 边界资格 |
+| Load | TPS | Attainment | p99 | p99.9 | Total CPU | 边界资格 |
 |---:|---:|---:|---:|---:|---:|:---:|
-| 7.7K | 7.7K | 100.00% | 120us | 570us | 0.239 cores | Yes |
-| 77K | 77.0K | 100.00% | 250us | 400us | 2.117 cores | Yes |
-| 192.5K | 192.5K | 100.00% | 340us | 740us | 5.136 cores | Yes |
-| 385K | 380.9K | 98.94% | 610us | 1.23ms | 9.724 cores | No |
-| 731.5K | 381.6K | 52.17% | 620us | 1.21ms | 9.563 cores | No |
+| 1% | 7.7K | 100.00% | 120us | 570us | 0.239 cores | Yes |
+| 10% | 77.0K | 100.00% | 250us | 400us | 2.117 cores | Yes |
+| 25% | 192.5K | 100.00% | 340us | 740us | 5.136 cores | Yes |
+| 50% | 380.9K | 98.94% | 610us | 1.23ms | 9.724 cores | No |
+| 95% | 381.6K | 52.17% | 620us | 1.21ms | 9.563 cores | No |
 
 直接观察如下：
 
-- `7.7K`：Socket 的 `0.239 cores / 120us` 填补了 GQM 软件 idle 的明显空档；相较
+- `1% load`：Socket 的 `0.239 cores / 120us` 填补了 GQM 软件 idle 的明显空档；相较
   `B1024/S10ms` 的 `3.194 cores / 20us`，它降低 `2.955 cores`，代价是 p99 增加
   `100us`。若允许约 `1.15ms`，GQM `B1/S100us` 又以 `0.217 cores` 略低于 Socket。
-- `77K`：Socket 的 `2.117 cores / 250us` 进入联合 frontier；它比 `B0/256/S100us`
+- `10% load`：Socket 的 `2.117 cores / 250us` 进入联合 frontier；它比 `B0/256/S100us`
   重复均值少用 `3.435 cores`，但 p99 从 `120us` 增至 `250us`。
-- `192.5K`：Socket 的 `5.136 cores / 340us` 进入联合 frontier；它比
+- `25% load`：Socket 的 `5.136 cores / 340us` 进入联合 frontier；它比
   `B1024/S1ms` 少用 `2.047 cores`，但 p99 从 `80us` 增至 `340us`。
-- `385K`：Socket 的 CPU 较低，但 attainment 只有 `98.94%`，未达到 gate，因此只能
+- `50% load`：Socket 的 CPU 较低，但 attainment 只有 `98.94%`，未达到 gate，因此只能
   作为 capacity 锚点；合格 GQM frontier 为 `B1024/S1us @ 11.712 cores/330us` 和
   `B0/256/S10us` 两次均值 `11.4745 cores/335us`。
-- `731.5K`：GQM 与 Socket 都未达到目标；GQM 最高为 `707.5K TPS/96.72%`，Socket 为
+- `95% load`：GQM 与 Socket 都未达到目标；GQM 最高为 `707.5K TPS/96.72%`，Socket 为
   `381.6K TPS/52.17%`，不构造等吞吐 CPU–P99 frontier。
 
 ## 2. P99 SLO 对应的最低 CPU 策略边界
@@ -117,7 +121,7 @@ Socket 五个锚点的原始结果为：
 `Attainment >= 99.5%` 且实测 `p99 <= budget` 的点中选择 Total CPU 最低者。
 
 ```text
-BestPolicy(QPS, P99_budget)
+BestPolicy(load, P99_budget)
 = argmin TotalCPU(policy)
   subject to attainment >= 99.5%
              p99 <= P99_budget
@@ -125,25 +129,25 @@ BestPolicy(QPS, P99_budget)
 
 边界区间采用左闭右开语义，最后一段延伸到更宽松的 P99 budget：
 
-| Target | P99 budget 区间 | 最低 CPU 策略 | Total CPU | 配额占用 |
+| Load | P99 budget 区间 | 最低 CPU 策略 | Total CPU | 配额占用 |
 |---:|---:|---|---:|---:|
-| 7.7K | `[20us, 120us)` | `BUD=1024, Sleep=10ms` | 3.194 cores | 19.962% |
-| 7.7K | `[120us, 1.15ms)` | `Socket` | 0.239 cores | 1.494% |
-| 7.7K | `[1.15ms, 19.24ms)` | `BUD=1, Sleep=100us` | 0.217 cores | 1.356% |
-| 7.7K | `[19.24ms, 19.26ms)` | `BUD=16, Sleep=10ms` | 0.113 cores | 0.706% |
-| 7.7K | `>=19.26ms` | `BUD=1, Sleep=10ms` | 0.112 cores | 0.700% |
-| 77K | `[30us, 40us)` | `BUD=1024, Sleep=1ms` | 6.931 cores | 43.319% |
-| 77K | `[40us, 120us)` | `BUD=0/256 repeat mean, Sleep=10us` | 5.8115 cores | 36.322% |
-| 77K | `[120us, 250us)` | `BUD=0/256 repeat mean, Sleep=100us` | 5.5515 cores | 34.697% |
-| 77K | `[250us, 1.32ms)` | `Socket` | 2.117 cores | 13.231% |
-| 77K | `[1.32ms, 2.29ms)` | `BUD=16, Sleep=1ms` | 1.598 cores | 9.988% |
-| 77K | `>=2.29ms` | `BUD=1, Sleep=100us` | 1.571 cores | 9.819% |
-| 192.5K | `[50us, 65us)` | `BUD=1024, Sleep=10us` | 8.500 cores | 53.125% |
-| 192.5K | `[65us, 80us)` | `BUD=0/256 repeat mean, Sleep=10us` | 8.027 cores | 50.169% |
-| 192.5K | `[80us, 340us)` | `BUD=1024, Sleep=1ms` | 7.183 cores | 44.894% |
-| 192.5K | `>=340us` | `Socket` | 5.136 cores | 32.100% |
-| 385K | `[330us, 335us)` | `BUD=1024, Sleep=1us` | 11.712 cores | 73.200% |
-| 385K | `>=335us` | `BUD=0/256 repeat mean, Sleep=10us` | 11.4745 cores | 71.716% |
+| 1% | `[20us, 120us)` | `BUD=1024, Sleep=10ms` | 3.194 cores | 19.962% |
+| 1% | `[120us, 1.15ms)` | `Socket` | 0.239 cores | 1.494% |
+| 1% | `[1.15ms, 19.24ms)` | `BUD=1, Sleep=100us` | 0.217 cores | 1.356% |
+| 1% | `[19.24ms, 19.26ms)` | `BUD=16, Sleep=10ms` | 0.113 cores | 0.706% |
+| 1% | `>=19.26ms` | `BUD=1, Sleep=10ms` | 0.112 cores | 0.700% |
+| 10% | `[30us, 40us)` | `BUD=1024, Sleep=1ms` | 6.931 cores | 43.319% |
+| 10% | `[40us, 120us)` | `BUD=0/256 repeat mean, Sleep=10us` | 5.8115 cores | 36.322% |
+| 10% | `[120us, 250us)` | `BUD=0/256 repeat mean, Sleep=100us` | 5.5515 cores | 34.697% |
+| 10% | `[250us, 1.32ms)` | `Socket` | 2.117 cores | 13.231% |
+| 10% | `[1.32ms, 2.29ms)` | `BUD=16, Sleep=1ms` | 1.598 cores | 9.988% |
+| 10% | `>=2.29ms` | `BUD=1, Sleep=100us` | 1.571 cores | 9.819% |
+| 25% | `[50us, 65us)` | `BUD=1024, Sleep=10us` | 8.500 cores | 53.125% |
+| 25% | `[65us, 80us)` | `BUD=0/256 repeat mean, Sleep=10us` | 8.027 cores | 50.169% |
+| 25% | `[80us, 340us)` | `BUD=1024, Sleep=1ms` | 7.183 cores | 44.894% |
+| 25% | `>=340us` | `Socket` | 5.136 cores | 32.100% |
+| 50% | `[330us, 335us)` | `BUD=1024, Sleep=1us` | 11.712 cores | 73.200% |
+| 50% | `>=335us` | `BUD=0/256 repeat mean, Sleep=10us` | 11.4745 cores | 71.716% |
 
 边界使用重复候选的中心均值，min–max whisker 不参与保守放大；因此它仍只是当前离散观测
 的描述性规则，不是生产参数或带统计置信度的阈值。Socket 只有前三档通过 gate 并进入
@@ -153,8 +157,8 @@ BestPolicy(QPS, P99_budget)
 
 1. 事件驱动 Socket 在低中负载确实进入联合 frontier：相比紧轮询/浅 idle，它用更高 p99
    换取更低 CPU；相比深 idle，它又能给出更低 p99，但不总是最低 CPU。
-2. 到 `385K`，Socket 已不能通过相同 attainment gate；GQM 仍能接近目标，但代价是
-   `11.47–11.71` 个两端合计 vCPU-equivalents。到 `731.5K`，两者都无法维持目标。
+2. 到 `50% load`，Socket 已不能通过相同 attainment gate；GQM 仍能接近目标，但代价是
+   `11.47–11.71` 个两端合计 vCPU-equivalents。到 `95% load`，两者都无法维持目标。
 3. 这构成了研发 GQM IRQ 的动机：期望在低中负载接近事件驱动 CPU，同时保持 GQM 在高
    负载的 capacity 优势；但该目标必须由同一 GQM transport 的 polling/IRQ A/B 验证。
 4. `BUD=0/256` 的偶然重复显示：TPS/gate 具有较好一致性，但部分低负载 CPU 和 p99.9
@@ -186,7 +190,8 @@ uv run python src/netpoll_gqm_idle_analysis.py \
 
 ## GQM 完整结果表
 
-下表按 `Target QPS → BUD → Sleep` 排列。最后一行仅保留附件中实际存在的字段。
+下表按原始 `Target QPS → BUD → Sleep` 排列。最后一行仅保留附件中实际存在的字段；
+绝对 QPS 只在这一原始附录和 CSV 中保留。
 
 | # | Target | BUD | Sleep | TPS | Attainment | p99 | p99.9 | Client CPU | Server CPU | Total cores | Gate |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|

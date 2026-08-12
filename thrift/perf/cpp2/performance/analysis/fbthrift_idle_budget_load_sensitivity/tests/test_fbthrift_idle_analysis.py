@@ -240,4 +240,9 @@ def test_figures_are_fbthrift_only_and_state_resource_semantics(
     assert "P99 budget" in svg
     assert "Socket" in svg
     assert "Netpoll" not in svg
+    for load_label in ("1% load", "10% load", "25% load", "50% load", "95% load"):
+        assert load_label in svg
+    assert svg.count("100% load = 160K QPS") == 2
+    assert "1.6K target QPS" not in svg
+    assert "152K target QPS" not in svg
     assert all(path.stat().st_size > 10_000 for path in paths)

@@ -2,16 +2,17 @@
 
 ## 基本结论
 
-本报告独立整理 fbthrift 的 80 个 Ubmem idle 配置和同五档 target QPS 的 5 个 Socket
+本报告独立整理 fbthrift 的 80 个 Ubmem idle 配置和同五档归一化负载的 5 个 Socket
 系统级锚点。固定资源为 Server 8 vCPU、Client 4 vCPU；图表中的 Total CPU 是两端进程所有
-线程 CPU% 之和折算的 vCPU-equivalents。
+线程 CPU% 之和折算的 vCPU-equivalents。无 idle 最大能力按 `160K QPS = 100% load` 定义，
+五档负载依次为 `1%、10%、25%、50%、95%`。
 
 当前数据直接支持三个事实：
 
 1. 单层 BUD + Sleep 可以形成显著的 CPU–P99 取舍，但最低 CPU 配置随负载和 P99 SLO
    变化，不存在覆盖五档负载的单一静态最优值。
-2. Socket 在 1.6K、16K、40K 和 152K 档通过 99.5% Sustain gate；80K 档只有 99.0%，
-   因此只作为容量锚点。152K 虽通过吞吐 gate，但 P99 为 12.12ms，不能只看 Sustain%。
+2. Socket 在 1%、10%、25% 和 95% load 通过 99.5% Sustain gate；50% load 只有 99.0%，
+   因此只作为容量锚点。95% load 虽通过吞吐 gate，但 P99 为 12.12ms，不能只看 Sustain%。
 3. 这批结果能够说明现有软件 idle 与系统级事件驱动路径之间的选择空间；它不是同一
    Ubmem transport 的 polling/IRQ A/B，不能据此宣布 GQM IRQ 已满足需求或给出 IRQ 固定开销。
 
@@ -19,14 +20,15 @@
 
 | 维度 | 取值 |
 |---|---|
-| Target QPS | `1.6K, 16K, 40K, 80K, 152K` |
+| 归一化负载 | `1%, 10%, 25%, 50%, 95%` |
+| 100% load 定义 | 无 idle 最大能力 `160K QPS` |
 | Idle | Disabled；Enabled with `Sleep=1us, 10us, 100us` |
 | BUD | `0, 1, 16, 256` |
 | Server 容器 | `8 vCPU` |
 | Client 容器 | `4 vCPU` |
 | 合计容器配额 | `12 vCPU` |
 | Ubmem 完整性 | `80/80` 完整点 |
-| Socket 锚点 | 同五档 target QPS，各 1 点 |
+| Socket 锚点 | 同五档归一化负载，各 1 点 |
 | Gate | 原始报告 `Sustain% >= 99.5%` |
 
 派生指标为：
@@ -44,16 +46,16 @@ idle disabled 时 BUD 不参与实际退避决策。每档四个 disabled 点原
 
 ## 负载级汇总
 
-| Target QPS | Ubmem 点 | 通过 gate | 最大 Achieved | P99 范围 | Total CPU 范围 |
+| Load | Ubmem 点 | 通过 gate | 最大 Achieved | P99 范围 | Total CPU 范围 |
 |---:|---:|---:|---:|---:|---:|
-| 1.6K | 16 | 16 | 1.6K | 99.5–302.1us | 0.207–7.685 cores |
-| 16K | 16 | 16 | 16.1K | 110.7us–1.32ms | 0.664–7.681 cores |
-| 40K | 16 | 15 | 40.2K | 203.2us–2.59ms | 1.352–7.683 cores |
-| 80K | 16 | 16 | 80.1K | 329.7us–15.91ms | 2.349–7.681 cores |
-| 152K | 16 | 9 | 152.2K | 1.63–18.47ms | 3.887–7.681 cores |
+| 1% | 16 | 16 | 1.6K | 99.5–302.1us | 0.207–7.685 cores |
+| 10% | 16 | 16 | 16.1K | 110.7us–1.32ms | 0.664–7.681 cores |
+| 25% | 16 | 15 | 40.2K | 203.2us–2.59ms | 1.352–7.683 cores |
+| 50% | 16 | 16 | 80.1K | 329.7us–15.91ms | 2.349–7.681 cores |
+| 95% | 16 | 9 | 152.2K | 1.63–18.47ms | 3.887–7.681 cores |
 
-Polling baseline 四次重复在 1.6K、16K、80K 档整体通过 gate；40K 档有一次 99.2%，
-152K 档四次只有 81.9–82.3%，所以这两档的 baseline 聚合候选不进入合格 frontier。
+Polling baseline 四次重复在 1%、10%、50% load 整体通过 gate；25% load 有一次 99.2%，
+95% load 四次只有 81.9–82.3%，所以这两档的 baseline 聚合候选不进入合格 frontier。
 五档 baseline 的 Total CPU 都约为 7.65–7.69 cores，说明它主要提供“持续轮询”的资源参照。
 
 ## 1. CPU–P99 取舍
@@ -64,25 +66,25 @@ Polling baseline 四次重复在 1.6K、16K、80K 档整体通过 gate；40K 档
 Socket 联合 Pareto frontier。Polling baseline 的横纵 whisker 是四次重复 min–max。
 Socket 五角星和投影虚线直接给出其 CPU、P99 和 Sustain%。
 
-| Target | Socket Sustain | Socket P99 | Socket Total CPU | 边界资格 |
+| Load | Socket Sustain | Socket P99 | Socket Total CPU | 边界资格 |
 |---:|---:|---:|---:|:---:|
-| 1.6K | 100.0% | 248.4us | 0.077 cores | Yes |
-| 16K | 100.0% | 199.8us | 0.600 cores | Yes |
-| 40K | 100.0% | 278.9us | 1.387 cores | Yes |
-| 80K | 99.0% | 466.8us | 2.423 cores | No |
-| 152K | 99.6% | 12.12ms | 3.871 cores | Yes |
+| 1% | 100.0% | 248.4us | 0.077 cores | Yes |
+| 10% | 100.0% | 199.8us | 0.600 cores | Yes |
+| 25% | 100.0% | 278.9us | 1.387 cores | Yes |
+| 50% | 99.0% | 466.8us | 2.423 cores | No |
+| 95% | 99.6% | 12.12ms | 3.871 cores | Yes |
 
 直接观察：
 
-- 1.6K：Ubmem 可用 `BUD=1/Sleep=1us` 达到 99.5us P99，但需 4.681 cores；
+- 1% load：Ubmem 可用 `BUD=1/Sleep=1us` 达到 99.5us P99，但需 4.681 cores；
   `BUD=1/Sleep=10us` 为 113.1us/1.362 cores；Socket 为 248.4us/0.077 cores。
-- 16K：Ubmem 从 110.7us/6.690 cores 到 189.8us/1.823 cores 形成阶梯；Socket 为
+- 10% load：Ubmem 从 110.7us/6.690 cores 到 189.8us/1.823 cores 形成阶梯；Socket 为
   199.8us/0.600 cores。
-- 40K：Socket 的 278.9us/1.387 cores 位于联合 frontier；Ubmem 可以向低延迟方向走到
+- 25% load：Socket 的 278.9us/1.387 cores 位于联合 frontier；Ubmem 可以向低延迟方向走到
   203.2us/6.728 cores，也可以向低 CPU 方向走到 305.2us/1.352 cores。
-- 80K：Socket 未通过 gate。Ubmem 合格点中，低 CPU 端为 430.6us/2.349 cores，低延迟端
+- 50% load：Socket 未通过 gate。Ubmem 合格点中，低 CPU 端为 430.6us/2.349 cores，低延迟端
   为 329.7us/5.304 cores。
-- 152K：Ubmem 的两个代表性合格点为 1.633ms/4.266 cores 与 1.848ms/3.887 cores；
+- 95% load：Ubmem 的两个代表性合格点为 1.633ms/4.266 cores 与 1.848ms/3.887 cores；
   Socket 的 CPU 略低，但 P99 增至 12.12ms。
 
 ## 2. P99 SLO 对应的最低 CPU 边界
@@ -92,7 +94,7 @@ Socket 五角星和投影虚线直接给出其 CPU、P99 和 Sustain%。
 每个阶梯点使用同一确定性规则：
 
 ```text
-BestPolicy(QPS, P99_budget)
+BestPolicy(load, P99_budget)
 = argmin TotalCPU(policy)
   subject to reported Sustain >= 99.5%
              measured P99 <= P99_budget
@@ -101,38 +103,38 @@ BestPolicy(QPS, P99_budget)
 区间左闭右开，最后一段延伸到更宽松的 P99 budget。边界只在当前离散实测候选中选择，
 不拟合连续参数，也不构成生产默认值。
 
-| Target QPS | P99 budget 区间 | 最低 CPU 候选 | Total CPU | 配额占用 |
+| Load | P99 budget 区间 | 最低 CPU 候选 | Total CPU | 配额占用 |
 |---:|---:|---|---:|---:|
-| 1.6K | `[99.5us, 99.7us)` | `BUD=1, Sleep=1us` | 4.681 cores | 39.0% |
-| 1.6K | `[99.7us, 113.1us)` | `BUD=0, Sleep=1us` | 4.673 cores | 38.9% |
-| 1.6K | `[113.1us, 248.4us)` | `BUD=1, Sleep=10us` | 1.362 cores | 11.3% |
-| 1.6K | `>= 248.4us` | `Socket` | 0.077 cores | 0.6% |
-| 16.0K | `[110.7us, 173.5us)` | `BUD=16, Sleep=1us` | 6.690 cores | 55.8% |
-| 16.0K | `[173.5us, 189.8us)` | `BUD=0, Sleep=10us` | 1.867 cores | 15.6% |
-| 16.0K | `[189.8us, 199.8us)` | `BUD=1, Sleep=10us` | 1.823 cores | 15.2% |
-| 16.0K | `>= 199.8us` | `Socket` | 0.600 cores | 5.0% |
-| 40.0K | `[203.2us, 210.1us)` | `BUD=16, Sleep=1us` | 6.728 cores | 56.1% |
-| 40.0K | `[210.1us, 225.9us)` | `BUD=16, Sleep=10us` | 5.047 cores | 42.1% |
-| 40.0K | `[225.9us, 226.8us)` | `BUD=0, Sleep=10us` | 2.456 cores | 20.5% |
-| 40.0K | `[226.8us, 278.9us)` | `BUD=1, Sleep=10us` | 2.438 cores | 20.3% |
-| 40.0K | `[278.9us, 301.4us)` | `Socket` | 1.387 cores | 11.6% |
-| 40.0K | `[301.4us, 305.2us)` | `BUD=0, Sleep=100us` | 1.354 cores | 11.3% |
-| 40.0K | `>= 305.2us` | `BUD=1, Sleep=100us` | 1.352 cores | 11.3% |
-| 80.0K | `[329.7us, 338.3us)` | `BUD=16, Sleep=10us` | 5.304 cores | 44.2% |
-| 80.0K | `[338.3us, 400.9us)` | `BUD=0, Sleep=10us` | 3.303 cores | 27.5% |
-| 80.0K | `[400.9us, 426.6us)` | `BUD=16, Sleep=100us` | 2.925 cores | 24.4% |
-| 80.0K | `[426.6us, 430.6us)` | `BUD=1, Sleep=100us` | 2.363 cores | 19.7% |
-| 80.0K | `>= 430.6us` | `BUD=0, Sleep=100us` | 2.349 cores | 19.6% |
-| 152.0K | `[1.63ms, 1.85ms)` | `BUD=16, Sleep=100us` | 4.266 cores | 35.5% |
-| 152.0K | `[1.85ms, 12.12ms)` | `BUD=0, Sleep=100us` | 3.887 cores | 32.4% |
-| 152.0K | `>= 12.12ms` | `Socket` | 3.871 cores | 32.3% |
+| 1% | `[99.5us, 99.7us)` | `BUD=1, Sleep=1us` | 4.681 cores | 39.0% |
+| 1% | `[99.7us, 113.1us)` | `BUD=0, Sleep=1us` | 4.673 cores | 38.9% |
+| 1% | `[113.1us, 248.4us)` | `BUD=1, Sleep=10us` | 1.362 cores | 11.3% |
+| 1% | `>= 248.4us` | `Socket` | 0.077 cores | 0.6% |
+| 10% | `[110.7us, 173.5us)` | `BUD=16, Sleep=1us` | 6.690 cores | 55.8% |
+| 10% | `[173.5us, 189.8us)` | `BUD=0, Sleep=10us` | 1.867 cores | 15.6% |
+| 10% | `[189.8us, 199.8us)` | `BUD=1, Sleep=10us` | 1.823 cores | 15.2% |
+| 10% | `>= 199.8us` | `Socket` | 0.600 cores | 5.0% |
+| 25% | `[203.2us, 210.1us)` | `BUD=16, Sleep=1us` | 6.728 cores | 56.1% |
+| 25% | `[210.1us, 225.9us)` | `BUD=16, Sleep=10us` | 5.047 cores | 42.1% |
+| 25% | `[225.9us, 226.8us)` | `BUD=0, Sleep=10us` | 2.456 cores | 20.5% |
+| 25% | `[226.8us, 278.9us)` | `BUD=1, Sleep=10us` | 2.438 cores | 20.3% |
+| 25% | `[278.9us, 301.4us)` | `Socket` | 1.387 cores | 11.6% |
+| 25% | `[301.4us, 305.2us)` | `BUD=0, Sleep=100us` | 1.354 cores | 11.3% |
+| 25% | `>= 305.2us` | `BUD=1, Sleep=100us` | 1.352 cores | 11.3% |
+| 50% | `[329.7us, 338.3us)` | `BUD=16, Sleep=10us` | 5.304 cores | 44.2% |
+| 50% | `[338.3us, 400.9us)` | `BUD=0, Sleep=10us` | 3.303 cores | 27.5% |
+| 50% | `[400.9us, 426.6us)` | `BUD=16, Sleep=100us` | 2.925 cores | 24.4% |
+| 50% | `[426.6us, 430.6us)` | `BUD=1, Sleep=100us` | 2.363 cores | 19.7% |
+| 50% | `>= 430.6us` | `BUD=0, Sleep=100us` | 2.349 cores | 19.6% |
+| 95% | `[1.63ms, 1.85ms)` | `BUD=16, Sleep=100us` | 4.266 cores | 35.5% |
+| 95% | `[1.85ms, 12.12ms)` | `BUD=0, Sleep=100us` | 3.887 cores | 32.4% |
+| 95% | `>= 12.12ms` | `Socket` | 3.871 cores | 32.3% |
 
 ## 结论与证据边界
 
 在 Server 8 vCPU、Client 4 vCPU 的当前 envelope 中，fbthrift 的单层 idle 策略能显著
 降低持续轮询 CPU，但代价和可维持负载随 BUD、Sleep 与 P99 SLO 共同变化。低中负载时，
-Socket 锚点经常进入最低 CPU 边界；到 80K，它无法通过相同 gate，而 Ubmem 仍有多个合格
-idle 配置。到 152K，两者都必须同时检查吞吐与尾延迟，单看 Sustain% 会掩盖 12ms 级 P99。
+Socket 锚点经常进入最低 CPU 边界；到 50% load，它无法通过相同 gate，而 Ubmem 仍有多个合格
+idle 配置。到 95% load，两者都必须同时检查吞吐与尾延迟，单看 Sustain% 会掩盖 12ms 级 P99。
 
 因此，本批数据适合定义“现有软件策略能够到达的 CPU–P99 边界”和下一阶段 IRQ A/B 的
 对照目标；它不测量 IRQ 本身。若要判断 HWQueue 是否必须增加 IRQ、以及 IRQ 至少要达到
@@ -167,7 +169,7 @@ uv run python src/fbthrift_idle_analysis.py \\
 
 完整字段保留在规范化 CSV；下表列出读图与 gate 所需的核心原始字段。
 
-| # | Target | Idle | BUD | Achieved | Sustain | P99 | P99.9 | Client CPU | Server CPU | Total CPU | Shed | Gate |
+| # | Target (raw QPS) | Idle | BUD | Achieved | Sustain | P99 | P99.9 | Client CPU | Server CPU | Total CPU | Shed | Gate |
 |---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|
 | 1 | 1.6K | Disabled | 0 | 1.6K | 100.0% | 224us | 297.9us | 399.3% | 368.9% | 7.682 cores | 0 | Yes |
 | 2 | 1.6K | Disabled | 1 | 1.6K | 100.0% | 231.1us | 353.9us | 399.5% | 369.0% | 7.685 cores | 0 | Yes |

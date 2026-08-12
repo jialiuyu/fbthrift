@@ -16,6 +16,7 @@ from matplotlib.lines import Line2D
 
 
 TARGET_QPS_VALUES = (7_700, 77_000, 192_500, 385_000, 731_500)
+MAX_NO_IDLE_TPS = 770_000
 BUD_VALUES = (0, 1, 16, 256, 1024)
 SLEEP_US_VALUES = (1, 10, 100, 1000, 10_000)
 PAYLOAD_LABEL = "Payload: 1 KiB (1024 B)"
@@ -23,13 +24,16 @@ RESOURCE_LABEL = (
     "S/C symmetric BUD + Sleep | Client container: 8 vCPU | "
     "Server container: 8 vCPU | Combined quota: 16 vCPU"
 )
-WORKLOAD_LABEL = f"{PAYLOAD_LABEL} | Concurrency: 128"
+WORKLOAD_LABEL = (
+    f"{PAYLOAD_LABEL} | Concurrency: 128 | "
+    f"100% load = {MAX_NO_IDLE_TPS // 1000}K TPS"
+)
 LOAD_TITLES = {
-    7_700: "7.7K QPS",
-    77_000: "77K QPS",
-    192_500: "192.5K QPS",
-    385_000: "385K QPS",
-    731_500: "731.5K QPS",
+    7_700: "1% load",
+    77_000: "10% load",
+    192_500: "25% load",
+    385_000: "50% load",
+    731_500: "95% load",
 }
 BUD_COLORS = {
     1: "#66CCEE",

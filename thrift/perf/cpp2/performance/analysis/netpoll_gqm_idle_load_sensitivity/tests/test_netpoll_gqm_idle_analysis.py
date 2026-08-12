@@ -343,6 +343,11 @@ def test_figures_expose_resource_cpu_and_decision_semantics(
         assert "Payload: 1 KiB (1024 B)" in svg
         assert "Concurrency: 128" in svg
         assert "sum of thread-level process CPU" in svg
+        assert "100% load = 770K TPS" in svg
+        for load_label in ("1% load", "10% load", "25% load", "50% load", "95% load"):
+            assert load_label in svg
+        assert "7.7K QPS" not in svg
+        assert "731.5K QPS" not in svg
         assert all(line == line.rstrip() for line in svg.splitlines())
 
     assert "Combined container quota occupancy (%)" in tradeoff_svg

@@ -15,19 +15,21 @@ from matplotlib.lines import Line2D
 
 
 TARGET_QPS_VALUES = (1_600, 16_000, 40_000, 80_000, 152_000)
+MAX_NO_IDLE_QPS = 160_000
 BUD_VALUES = (0, 1, 16, 256)
 IDLE_CONFIGS = ((False, 0), (True, 1), (True, 10), (True, 100))
 RESOURCE_LABEL = (
-    "fbthrift Ubmem | Server: 8 vCPU | Client: 4 vCPU | "
+    f"fbthrift Ubmem | 100% load = {MAX_NO_IDLE_QPS // 1000}K QPS | "
+    "Server: 8 vCPU | Client: 4 vCPU | "
     "Combined quota: 12 vCPU"
 )
 CPU_LABEL = "Total CPU: summed thread-level process usage across client and server"
 LOAD_TITLES = {
-    1_600: "1.6K target QPS",
-    16_000: "16K target QPS",
-    40_000: "40K target QPS",
-    80_000: "80K target QPS",
-    152_000: "152K target QPS",
+    1_600: "1% load",
+    16_000: "10% load",
+    40_000: "25% load",
+    80_000: "50% load",
+    152_000: "95% load",
 }
 BUD_COLORS = {
     0: "#4477AA",
