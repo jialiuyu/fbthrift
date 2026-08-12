@@ -23,6 +23,7 @@
 | FH-005 | 高线程点进入 NUMA/SMT placement regime change | `numastat`、binding map、`1-16` vs `32/64` | `PROPOSED` |
 | FH-006 | 同步 GQM operation 成本在高压力下被排队放大，先触发 latency cliff 再损失 capacity | push/pop 与端点分离注入、每 RPC 操作计数、重复 delay sweep | `INCONCLUSIVE` |
 | FH-007 | RPC 路径的同步 GQM operation 暴露量决定 fixed-outstanding delay 敏感度 | `K/QPS` cycle slope、每端 push/pop counter、outstanding-window sweep | `INCONCLUSIVE` |
+| FH-009 | Empty-poll 后的 periodic backoff 可以降低空轮询 CPU，但 interval/BUD 的静态最优值随负载与 P99 SLO 改变 | `N={1,8}` 的 load × interval sweep、8+4 vCPU 下的 load × BUD × Sleep、CPU–p99 frontier、实际 backoff/wakeup 时序、IRQ/Socket 对照 | `RUNNING` |
 | FH-012 | Netpoll GQM 的 BUD 与 Sleep 具有负载敏感性，低负载 CPU–p99 取舍会在高负载收缩为 capacity 约束 | `QPS × BUD × Sleep` attainment gate、CPU–p99 frontier、P99-SLO 最低 CPU 边界、Socket/IRQ 对照 | `RUNNING` |
 
 ## 未决实验
@@ -51,6 +52,26 @@
 - 允许重开：保存精确 build/route 和逐点命令；每点至少重复三次；分端分方向记录
   successful/empty push/pop、notification/ACK；对齐 workload/payload/CPU 并扫
   `K={1,8,32,100}`。
+
+### EDR-0005：Empty-poll backoff interval 的 open-loop RPC 敏感性
+
+- Status：`RUNNING`
+- 记录：[EDR-0005-empty-poll-backoff-openloop-sensitivity.md](edr/EDR-0005-empty-poll-backoff-openloop-sensitivity.md)
+- 唯一变量：在固定 `(IO threads, per-thread target QPS)` 切片内，只改变 poll 为空后的
+  backoff interval；`0us` 为不退避对照组。
+- 当前证据：`N={1,8}`、每线程 target `{3.5K,10K,35K QPS}`、interval
+  `{0,10us,100us,1ms,10ms}` 的 30 个 Ubmem 点和 6 个 TCP Socket 对照点全部 `OK`；
+  client/server CPU 已采集。新增固定 Server 8 vCPU、Client 4 vCPU 的 80 个
+  `Target QPS × Sleep × BUD` Ubmem 点和 5 个 Socket 锚点；五档 Ubmem 通过 99.5% gate
+  的点数为 `16/16、16/16、15/16、16/16、9/16`。
+- 初步事实：TCP 在低负载进入 periodic backoff 未覆盖的 CPU–p99 Pareto 区域；到
+  `N=8、35K QPS/thread` 时，Ubmem `100us` 同时具有更低 Total CPU 和 p99。
+  Ubmem `10us/100us` 的 p99 scale-out amplification 约为 `0.99–1.01x`，TCP 在
+  `10K/35K QPS/thread` 时为 `1.42x/1.35x`。新增矩阵中 80K Socket 未通过 gate；
+  Ubmem 合格 frontier 为 `329.7us/5.304 cores` 到 `430.6us/2.349 cores`。
+- 硬件含义：支持“空闲时 notification、繁忙时 polling”的 hybrid 需求方向。
+- 证据边界：重复 run、实际 arm/notify/backoff/wakeup 时序和同一 Ubmem 路径上的真实
+  HWQueue IRQ A/B 缺失；TCP 是系统级 reference，不能作 IRQ 收益测量或硬件内部归因。
 
 ### EDR-0008：Netpoll GQM BUD 与 Sleep 的负载敏感性
 
@@ -95,6 +116,7 @@
 | GQM HWQueue wrapper | synchronous push/pop cost | completed QPS、queue latency | `EDR-0002` |
 | `Client_ub` / `Server_ub` | fixed outstanding、`gqm_inject_cost_ns` | `noop`、QPS、p99、`K/QPS` cycle | `EDR-0003` |
 | VA FLAT Compressed Polling | effective GQM exposure | `echo 1KiB`、QPS retention、p99 | `EDR-0003` |
+| Ubmem polling path、GQM private pairs、TCP Socket | empty-poll periodic backoff、BUD、event-driven reference | `N × per-thread load × interval`、`Target QPS × Sleep × BUD`、P99-SLO minimum CPU、completed QPS | `EDR-0005` |
 | Netpoll GQM idle path | BUD、configured Sleep、load-sensitive idle transition | target attainment、TP99/TP999、client/server CPU、CPU–p99 Pareto | `EDR-0008` |
 
 ## 推荐下一步
@@ -108,7 +130,11 @@
    poller handoff 是否是主要边界。
 4. 如果两条 SHM route 在相近线程点同时退化，再进入 FH-002 的 cacheline/NUMA 证据收集。
 5. `io_threads=1-16` 作为主结论区间；`32/64` 单独标记为高线程 placement regime。
-6. 对 FH-012 先对代表性联合 frontier/边界点补三次交错重复和 stage
+6. 对 FH-009 在 8+4 vCPU envelope 中补代表性 frontier/边界点的三次交错重复，并在
+   同一 Ubmem transport/resource budget 下加入真实 HWQueue IRQ/event-driven A/B；记录
+   arm-to-notify、notify-to-run 和 publish-to-detect。Socket 继续作为系统级 reference，
+   不用于直接计算 IRQ 收益。
+7. 对 FH-012 先对代表性联合 frontier/边界点补三次交错重复和 stage
    residency/empty-pop/wakeup counter；Socket reference 已补齐，真实 GQM IRQ 可用后
    在同一 transport 内执行 polling/IRQ A/B。
 
