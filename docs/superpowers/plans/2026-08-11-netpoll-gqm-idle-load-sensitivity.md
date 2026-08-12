@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Preserve the 125-cell `QPS × BUD × Sleep` input, derive attainment and CPU-efficiency metrics, and publish three academic figures plus a bounded Chinese README.
+**Goal:** Preserve the 125-cell `QPS × BUD × Sleep` input, derive attainment and exact P99-SLO policy boundaries, and publish two decision-oriented academic figures plus a bounded Chinese README.
 
-**Architecture:** A single focused Python module loads a normalized CSV, validates the expected matrix including one explicitly partial cell, derives metrics and Pareto membership, then emits a derived CSV, summary CSV, and PNG/SVG figures. Tests define parsing, missing-value, metric, Pareto, and figure-contract behavior before implementation. Documentation and EDR metadata consume the generated artifacts without duplicating computation.
+**Architecture:** A single focused Python module loads the normalized GQM matrix and Socket baseline, preserves all raw measurements, collapses the accidentally identical `BUD=0/256` runs into repeat-aware candidates, and derives a combined Pareto frontier plus deterministic minimum-CPU policy. It emits derived, summary, candidate, and policy-boundary CSVs plus two PNG/SVG figures. Tests define repeat, gate, boundary, and figure semantics before implementation.
 
 **Tech Stack:** Python 3.11, standard-library `csv`/`dataclasses`, Matplotlib, pytest, uv, fbthrift performance EDR validator.
 
@@ -117,56 +117,77 @@ Run:
 
 ```bash
 uv run pytest -q
-uv run python src/netpoll_gqm_idle_analysis.py --data data/netpoll_gqm_idle_load_sensitivity.csv --derived-output data/netpoll_gqm_idle_load_sensitivity_derived.csv --summary-output data/netpoll_gqm_idle_load_sensitivity_summary.csv --figure-dir figures
+uv run python src/netpoll_gqm_idle_analysis.py --data data/netpoll_gqm_idle_load_sensitivity.csv --derived-output data/netpoll_gqm_idle_load_sensitivity_derived.csv --summary-output data/netpoll_gqm_idle_load_sensitivity_summary.csv --policy-boundary-output data/netpoll_gqm_idle_policy_boundaries.csv --figure-dir figures
 ```
 
 Expected: tests pass and both CSV files use LF line endings.
 
-### Task 3: Generate three academic figures with TDD
+### Task 3: Derive exact P99-SLO policy boundaries with TDD
 
 **Files:**
 - Modify: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/src/netpoll_gqm_idle_analysis.py`
 - Modify: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/tests/test_netpoll_gqm_idle_analysis.py`
-- Create: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/figures/01_throughput_attainment_heatmap.{png,svg}`
-- Create: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/figures/02_p99_latency_heatmap.{png,svg}`
-- Create: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/figures/03_cpu_p99_pareto.{png,svg}`
+- Create: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/data/netpoll_gqm_idle_policy_boundaries.csv`
 
-- [ ] **Step 1: Write failing figure-contract tests**
+- [ ] **Step 1: Write failing boundary tests**
 
 ```python
-def test_generation_emits_three_png_svg_pairs(tmp_path: Path) -> None:
-    outputs = generate_figures(derive_measurements(load_measurements(DATA_PATH)), tmp_path)
-    assert {p.name for p in outputs} == {
-        "01_throughput_attainment_heatmap.png", "01_throughput_attainment_heatmap.svg",
-        "02_p99_latency_heatmap.png", "02_p99_latency_heatmap.svg",
-        "03_cpu_p99_pareto.png", "03_cpu_p99_pareto.svg",
-    }
+def test_policy_boundaries_select_minimum_cpu_under_each_p99_budget() -> None:
+    segments = build_policy_boundaries(derive_measurements(load_measurements(DATA_PATH)))
+    low = [segment for segment in segments if segment.target_qps == 7_700]
+    assert [(s.min_p99_budget_us, s.bud, s.sleep_us) for s in low] == [
+        (20, 1024, 10_000),
+        (1150, 1, 100),
+        (19240, 16, 10_000),
+        (19260, 1, 10_000),
+    ]
 
-def test_figures_expose_payload_gate_and_missing_cell(tmp_path: Path) -> None:
-    generate_figures(derive_measurements(load_measurements(DATA_PATH)), tmp_path)
-    text = (tmp_path / "01_throughput_attainment_heatmap.svg").read_text()
-    assert "Payload: 1 KiB (1024 B)" in text
-    assert "99.5% attainment gate" in text
-    assert "N/A" in text
+def test_near_capacity_load_has_no_policy_boundary() -> None:
+    segments = build_policy_boundaries(derive_measurements(load_measurements(DATA_PATH)))
+    assert not any(segment.target_qps == 731_500 for segment in segments)
 ```
 
 - [ ] **Step 2: Run tests and verify RED**
 
-Expected: failure because `generate_figures` is absent.
+Expected: failure because `build_policy_boundaries` is absent.
 
-- [ ] **Step 3: Implement heatmaps and Pareto plot**
+- [ ] **Step 3: Implement boundary derivation and CSV writer**
 
-Use a consistent five-panel layout; discrete Sleep/BUD ticks; logarithmic p99 color normalization; hatched or muted unsustained cells; an explicit `N/A` cell; log-scaled p99 in the Pareto figure; direct annotation only for frontier points. Save PNG at 220 DPI and whitespace-normalized SVG.
+For every target QPS, consider only `target_sustained` points. At every unique observed P99 threshold, select the eligible point with minimum `used_cores`; emit a new segment only when the selected point changes. Segments are left-closed/right-open, with the final upper bound empty. The output includes quota occupancy as `used_cores / 16 × 100`.
+
+- [ ] **Step 4: Run tests, write the boundary CSV, and verify GREEN**
+
+Run `uv run pytest -q`; expected: all tests pass and the boundary CSV has 15 rows.
+
+### Task 4: Generate two academic figures with TDD
+
+**Files:**
+- Modify: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/src/netpoll_gqm_idle_analysis.py`
+- Modify: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/tests/test_netpoll_gqm_idle_analysis.py`
+- Create: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/figures/01_sc_symmetric_cpu_p99_tradeoff.{png,svg}`
+- Create: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/figures/02_p99_budget_minimum_cpu_boundary.{png,svg}`
+
+- [ ] **Step 1: Write failing figure-contract tests**
+
+Assert that generation returns exactly two PNG/SVG pairs and both SVGs state S/C symmetric policy, Client/Server `8 vCPU`, total `16 vCPU`, Payload `1 KiB`, Concurrency `128`, and summed thread-level CPU semantics. Assert the first contains the combined quota axis and the second contains `P99 budget` plus the no-feasible-policy label for `731.5K`.
+
+- [ ] **Step 2: Run tests and verify RED**
+
+Expected: old three-figure output violates the new contract.
+
+- [ ] **Step 3: Implement the detailed trade-off and selection-boundary figures**
+
+The trade-off figure uses five load panels, adaptive CPU axes, a secondary quota-occupancy axis, direct frontier labels, and muted unsustained points. The selection figure plots the stepwise minimum CPU boundary for four sustained loads and a no-feasible-policy panel for `731.5K`. Do not add placeholder Socket marks.
 
 - [ ] **Step 4: Run tests and verify GREEN**
 
-Run `uv run pytest -q`; expected: all tests pass and six figure files are non-empty.
+Run `uv run pytest -q`; expected: all tests pass and four figure files are non-empty.
 
-- [ ] **Step 5: Render and visually inspect all three PNG files**
+- [ ] **Step 5: Render and visually inspect both PNG files**
 
-Check that titles, color bars, cell labels, direct annotations and axes do not overlap. Adjust layout only after keeping tests green.
+Check that titles, metadata, dual x axes, direct annotations and labels do not overlap. Adjust layout only after keeping tests green.
 
-### Task 4: Publish README and experiment record
+### Task 5: Publish README and experiment record
 
 **Files:**
 - Create: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/README.md`
@@ -176,7 +197,7 @@ Check that titles, color bars, cell labels, direct annotations and axes do not o
 
 - [ ] **Step 1: Write the README from generated values**
 
-Use total-summary-first structure: matrix/envelope and bounded findings, then one section per figure, followed by the full normalized 125-row table and limitations. Do not claim Socket or IRQ benefit from this batch.
+Use total-summary-first structure: matrix/envelope and CPU semantics, then the detailed trade-off figure, the exact P99-SLO boundary figure, the full normalized 125-row table, and limitations. Remove heatmap presentation. Do not claim Socket or IRQ benefit from this batch.
 
 - [ ] **Step 2: Record provenance and EDR scope**
 
@@ -199,3 +220,36 @@ Run the EDR validator from the analysis directory only after resolving paths to 
 - [ ] **Step 5: Review scope and commit intentionally**
 
 Stage only the plan, new analysis directory, EDR-0008, and the exact Frontier hunks added for EDR-0008. Preserve all unrelated modified and untracked files.
+
+### Task 6: Integrate Socket anchors and correct duplicate-policy semantics
+
+**Files:**
+- Create: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/data/raw/netpoll_socket_qps_baseline.txt`
+- Create: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/data/netpoll_socket_qps_baseline.csv`
+- Create: `thrift/perf/cpp2/performance/analysis/netpoll_gqm_idle_load_sensitivity/data/netpoll_idle_tradeoff_candidates.csv`
+- Modify: analysis source, tests, figures, README, `SOURCE.md`, `EDR-0008`, and the exact `FRONTIER.md` EDR-0008 text.
+
+- [x] **Step 1: Archive the five Socket points and write failing loader/gate tests**
+
+Verify `Concurrency=128`, `Payload=1024 B`, total CPU cores, and that the `7.7K/77K/192.5K`
+points pass the 99.5% gate while `385K/731.5K` do not.
+
+- [x] **Step 2: Write failing duplicate-aggregation tests**
+
+Preserve all 125 GQM rows. Collapse `BUD=0` and `BUD=256` at every `QPS × Sleep` into one
+effective candidate whose center is the two-run mean and whose uncertainty is the min-max range.
+Require both repeats to pass the gate. Verify all 25 pairs agree on gate classification.
+
+- [x] **Step 3: Implement candidate aggregation and combined policy boundaries**
+
+Keep `BUD=1/16/1024` as single-run candidates. Add eligible Socket points to the same per-load
+Pareto and P99-budget selection rule. Use candidate center values for boundaries and emit repeat
+count/ranges in the candidate CSV.
+
+- [x] **Step 4: Regenerate both figures and update the report**
+
+Use a five-point Socket star series with direct CPU/P99/attainment labels and projection lines.
+Draw min-max x/y whiskers directly on duplicate GQM candidates. State explicitly that these are
+two-run ranges, not confidence intervals, and that Socket is not an IRQ measurement.
+
+- [x] **Step 5: Run focused tests, EDR validation, diff checks, and visual inspection**

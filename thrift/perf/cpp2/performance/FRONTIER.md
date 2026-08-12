@@ -1,6 +1,6 @@
 # 性能优化 Frontier
 
-最后维护日期：2026-07-22
+最后维护日期：2026-08-12
 
 本文是当前性能认知和 EDR 检索路由，不保存完整实验过程。开始相关任务前必须先读
 [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md)。
@@ -23,6 +23,7 @@
 | FH-005 | 高线程点进入 NUMA/SMT placement regime change | `numastat`、binding map、`1-16` vs `32/64` | `PROPOSED` |
 | FH-006 | 同步 GQM operation 成本在高压力下被排队放大，先触发 latency cliff 再损失 capacity | push/pop 与端点分离注入、每 RPC 操作计数、重复 delay sweep | `INCONCLUSIVE` |
 | FH-007 | RPC 路径的同步 GQM operation 暴露量决定 fixed-outstanding delay 敏感度 | `K/QPS` cycle slope、每端 push/pop counter、outstanding-window sweep | `INCONCLUSIVE` |
+| FH-012 | Netpoll GQM 的 BUD 与 Sleep 具有负载敏感性，低负载 CPU–p99 取舍会在高负载收缩为 capacity 约束 | `QPS × BUD × Sleep` attainment gate、CPU–p99 frontier、P99-SLO 最低 CPU 边界、Socket/IRQ 对照 | `RUNNING` |
 
 ## 未决实验
 
@@ -51,6 +52,23 @@
   successful/empty push/pop、notification/ACK；对齐 workload/payload/CPU 并扫
   `K={1,8,32,100}`。
 
+### EDR-0008：Netpoll GQM BUD 与 Sleep 的负载敏感性
+
+- Status：`RUNNING`
+- 记录：[EDR-0008-netpoll-gqm-idle-load-sensitivity.md](edr/EDR-0008-netpoll-gqm-idle-load-sensitivity.md)
+- 当前矩阵：固定 `Concurrency=128`、`Payload=1KiB`，扫描五档 target QPS、五档 BUD 和
+  五档 Sleep；125 个配置键中 124 点完整、1 点只保留 TPS。
+- 当前事实：达到 99.5% target attainment 的 cell 数随负载为 `25、20、10、10、0`；
+  `731.5K` 档最高为 `707.5K TPS/96.72%`，按 near-capacity stress 解释。`BUD=0/256`
+  实为相同有效配置的 25 对偶然重复，gate 分类 25/25 一致。
+- Socket reference：五档依次达到 `100%、100%、100%、98.94%、52.17%`；前三档进入联合
+  CPU–p99 frontier，后两档因未通过 gate 只作为 capacity 锚点。
+- 初步方向：按重复均值与 Socket 联合候选，在给定 P99 budget 时最小化 Total CPU，四档
+  负载形成 `5/6/4/2` 个离散选择区间。Socket 展示低中负载的事件驱动参照，高负载仍缺
+  同 transport IRQ A/B。
+- 证据边界：除 `BUD=0/256` 偶然重复外均为单次；缺少运行 provenance、stage
+  residency/empty-pop/wakeup counter 和真实 GQM IRQ A/B，Socket 差异不能归因于 IRQ。
+
 ## 已关闭方向
 
 ### EDR-0001：CXL hot shard Busy-Poll EventBase
@@ -77,6 +95,7 @@
 | GQM HWQueue wrapper | synchronous push/pop cost | completed QPS、queue latency | `EDR-0002` |
 | `Client_ub` / `Server_ub` | fixed outstanding、`gqm_inject_cost_ns` | `noop`、QPS、p99、`K/QPS` cycle | `EDR-0003` |
 | VA FLAT Compressed Polling | effective GQM exposure | `echo 1KiB`、QPS retention、p99 | `EDR-0003` |
+| Netpoll GQM idle path | BUD、configured Sleep、load-sensitive idle transition | target attainment、TP99/TP999、client/server CPU、CPU–p99 Pareto | `EDR-0008` |
 
 ## 推荐下一步
 
@@ -89,6 +108,9 @@
    poller handoff 是否是主要边界。
 4. 如果两条 SHM route 在相近线程点同时退化，再进入 FH-002 的 cacheline/NUMA 证据收集。
 5. `io_threads=1-16` 作为主结论区间；`32/64` 单独标记为高线程 placement regime。
+6. 对 FH-012 先对代表性联合 frontier/边界点补三次交错重复和 stage
+   residency/empty-pop/wakeup counter；Socket reference 已补齐，真实 GQM IRQ 可用后
+   在同一 transport 内执行 polling/IRQ A/B。
 
 ## 维护规则
 
