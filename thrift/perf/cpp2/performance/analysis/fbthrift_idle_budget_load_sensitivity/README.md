@@ -62,11 +62,10 @@ Polling baseline 四次重复在 1%、10%、50% load 整体通过 gate；25% loa
 
 ![fbthrift CPU-P99 trade-off](figures/01_fbthrift_cpu_p99_tradeoff.png)
 
-图中彩色 Ubmem 点通过 gate，灰色叉号未通过；黑色虚线连接同负载下合格的 Ubmem 与
-Socket 联合 Pareto frontier。Polling baseline 的横纵 whisker 是四次重复 min–max。
-Socket 五角星和投影虚线直接给出其 CPU、P99 和 Sustain%。
+图中展示全部实测 Ubmem 点，不再按 Sustain% 改变透明度或资格；Polling baseline 使用黑色
+菱形。Socket 使用红色五角星，并以横纵虚线和文字直接给出 CPU、P99 与 Sustain%。
 
-| Load | Socket Sustain | Socket P99 | Socket Total CPU | 边界资格 |
+| Load | Socket Sustain | Socket P99 | Socket Total CPU | Sustain≥99.5% |
 |---:|---:|---:|---:|:---:|
 | 1% | 100.0% | 248.4us | 0.077 cores | Yes |
 | 10% | 100.0% | 199.8us | 0.600 cores | Yes |
@@ -80,11 +79,11 @@ Socket 五角星和投影虚线直接给出其 CPU、P99 和 Sustain%。
   `BUD=1/Sleep=10us` 为 113.1us/1.362 cores；Socket 为 248.4us/0.077 cores。
 - 10% load：Ubmem 从 110.7us/6.690 cores 到 189.8us/1.823 cores 形成阶梯；Socket 为
   199.8us/0.600 cores。
-- 25% load：Socket 的 278.9us/1.387 cores 位于联合 frontier；Ubmem 可以向低延迟方向走到
+- 25% load：Socket 为 278.9us/1.387 cores；Ubmem 可以向低延迟方向走到
   203.2us/6.728 cores，也可以向低 CPU 方向走到 305.2us/1.352 cores。
-- 50% load：Socket 未通过 gate。Ubmem 合格点中，低 CPU 端为 430.6us/2.349 cores，低延迟端
+- 50% load：Socket 的 Sustain 为 99.0%。Ubmem 低 CPU 端为 430.6us/2.349 cores，低延迟端
   为 329.7us/5.304 cores。
-- 95% load：Ubmem 的两个代表性合格点为 1.633ms/4.266 cores 与 1.848ms/3.887 cores；
+- 95% load：Ubmem 的两个代表性点为 1.633ms/4.266 cores 与 1.848ms/3.887 cores；
   Socket 的 CPU 略低，但 P99 增至 12.12ms。
 
 ## 2. P99 SLO 对应的最低 CPU 边界
@@ -96,8 +95,7 @@ Socket 五角星和投影虚线直接给出其 CPU、P99 和 Sustain%。
 ```text
 BestPolicy(load, P99_budget)
 = argmin TotalCPU(policy)
-  subject to reported Sustain >= 99.5%
-             measured P99 <= P99_budget
+  subject to measured P99 <= P99_budget
 ```
 
 区间左闭右开，最后一段延伸到更宽松的 P99 budget。边界只在当前离散实测候选中选择，
@@ -132,9 +130,9 @@ BestPolicy(load, P99_budget)
 ## 结论与证据边界
 
 在 Server 8 vCPU、Client 4 vCPU 的当前 envelope 中，fbthrift 的单层 idle 策略能显著
-降低持续轮询 CPU，但代价和可维持负载随 BUD、Sleep 与 P99 SLO 共同变化。低中负载时，
-Socket 锚点经常进入最低 CPU 边界；到 50% load，它无法通过相同 gate，而 Ubmem 仍有多个合格
-idle 配置。到 95% load，两者都必须同时检查吞吐与尾延迟，单看 Sustain% 会掩盖 12ms 级 P99。
+降低持续轮询 CPU，但代价和可维持负载随 budget、Sleep 与 P99 SLO 共同变化。SLO 图对全部
+实测候选进行描述性选优，不把 Sustain% 作为资格门槛；因此边界必须与原始吞吐数据共同阅读，
+不能把低达成率策略直接解释为可部署配置。到 95% load，单看 Sustain% 也会掩盖 12ms 级 P99。
 
 因此，本批数据适合定义“现有软件策略能够到达的 CPU–P99 边界”和下一阶段 IRQ A/B 的
 对照目标；它不测量 IRQ 本身。若要判断 HWQueue 是否必须增加 IRQ、以及 IRQ 至少要达到

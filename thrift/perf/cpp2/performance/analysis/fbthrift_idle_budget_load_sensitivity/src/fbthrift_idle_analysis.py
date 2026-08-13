@@ -214,6 +214,7 @@ class PolicyBoundary:
     repeat_count: int
     p99_us: float
     used_cores: float
+    reported_sustain_pct: float
     total_cpu_pct: float
     quota_occupancy_pct: float
 
@@ -484,7 +485,7 @@ def build_policy_boundaries(
         eligible = [
             row
             for row in candidates
-            if row.target_qps == target_qps and row.target_sustained
+            if row.target_qps == target_qps
         ]
         selected: list[TradeoffCandidate] = []
         thresholds: list[float] = []
@@ -514,6 +515,7 @@ def build_policy_boundaries(
                     repeat_count=best.repeat_count,
                     p99_us=best.p99_us,
                     used_cores=best.used_cores,
+                    reported_sustain_pct=best.reported_sustain_pct,
                     total_cpu_pct=best.total_cpu_pct,
                     quota_occupancy_pct=best.used_cores / 12.0 * 100.0,
                 )
@@ -614,7 +616,7 @@ def _policy_label(row: TradeoffCandidate | PolicyBoundary) -> str:
     if row.policy == "Polling baseline":
         return "Polling"
     assert row.bud is not None and row.sleep_us is not None
-    return f"B{row.bud}/S{SLEEP_LABELS[row.sleep_us]}"
+    return f"Budget {row.bud} · Sleep {SLEEP_LABELS[row.sleep_us]}"
 
 
 def _add_heading(figure: plt.Figure, title: str) -> None:
@@ -636,18 +638,6 @@ def _reserve_caption_space(figure: plt.Figure) -> None:
         layout_engine.set(rect=(0.0, 0.075, 1.0, 0.825), h_pad=0.12, w_pad=0.10)
 
 
-def _add_quota_axis(axis: plt.Axes) -> None:
-    quota_axis = axis.secondary_xaxis(
-        "top",
-        functions=(
-            lambda cores: cores / 12.0 * 100.0,
-            lambda occupancy: occupancy / 100.0 * 12.0,
-        ),
-    )
-    quota_axis.set_xlabel("Combined quota occupancy (%)", labelpad=3)
-    quota_axis.tick_params(labelsize=7.6, pad=1.5)
-
-
 def _plot_cpu_p99_tradeoff(
     candidates: list[TradeoffCandidate], output_dir: Path
 ) -> list[Path]:
@@ -656,39 +646,18 @@ def _plot_cpu_p99_tradeoff(
     )
     for axis, target_qps in zip(axes.flat[:5], TARGET_QPS_VALUES):
         rows = [row for row in candidates if row.target_qps == target_qps]
+        socket = next(row for row in rows if row.transport == "Socket")
         ubmem = [row for row in rows if row.transport == "Ubmem"]
         for row in ubmem:
-            if not row.target_sustained:
+            if row.policy == "Polling baseline":
                 axis.scatter(
                     row.used_cores,
                     row.p99_us,
-                    marker="x",
-                    s=31,
-                    color="#AAAAAA",
-                    linewidth=0.9,
-                    alpha=0.72,
-                    zorder=1,
-                )
-                continue
-            if row.policy == "Polling baseline":
-                axis.errorbar(
-                    row.used_cores,
-                    row.p99_us,
-                    xerr=[
-                        [row.used_cores - row.used_cores_min],
-                        [row.used_cores_max - row.used_cores],
-                    ],
-                    yerr=[
-                        [row.p99_us - row.p99_us_min],
-                        [row.p99_us_max - row.p99_us],
-                    ],
-                    fmt="D",
-                    markersize=6.0,
-                    markerfacecolor="#222222",
-                    markeredgecolor="#222222",
-                    ecolor="#444444",
-                    elinewidth=0.9,
-                    capsize=2.2,
+                    marker="D",
+                    s=48,
+                    facecolor="#222222",
+                    edgecolor="#222222",
+                    linewidth=0.7,
                     zorder=5,
                 )
             else:
@@ -701,34 +670,33 @@ def _plot_cpu_p99_tradeoff(
                     facecolor=BUD_COLORS[row.bud],
                     edgecolor="#222222",
                     linewidth=0.7,
-                    alpha=0.92,
+                    alpha=1.0,
                     zorder=3,
                 )
 
-        socket = next(row for row in rows if row.transport == "Socket")
-        socket_color = "#B2182B" if socket.target_sustained else "#777777"
+        socket_color = "#B2182B"
         axis.axvline(
             socket.used_cores,
             color=socket_color,
-            linewidth=0.8,
-            linestyle=(0, (3, 3)),
-            alpha=0.62,
-            zorder=0,
+            linewidth=0.9,
+            linestyle=(0, (4, 3)),
+            alpha=0.70,
+            zorder=1,
         )
         axis.axhline(
             socket.p99_us,
             color=socket_color,
-            linewidth=0.8,
-            linestyle=(0, (3, 3)),
-            alpha=0.62,
-            zorder=0,
+            linewidth=0.9,
+            linestyle=(0, (4, 3)),
+            alpha=0.70,
+            zorder=1,
         )
         axis.scatter(
             socket.used_cores,
             socket.p99_us,
             marker="*",
             s=158,
-            facecolor=socket_color if socket.target_sustained else "white",
+            facecolor=socket_color,
             edgecolor=socket_color,
             linewidth=1.25,
             zorder=7,
@@ -739,7 +707,7 @@ def _plot_cpu_p99_tradeoff(
         axis.annotate(
             f"Socket: {socket.used_cores:.3f} cores, "
             f"{_format_latency(socket.p99_us)}, "
-            f"{socket.reported_sustain_pct:.1f}%",
+            f"Attainment {socket.reported_sustain_pct:.1f}%",
             (socket.used_cores, socket.p99_us),
             xytext=socket_offset,
             textcoords="offset points",
@@ -751,38 +719,6 @@ def _plot_cpu_p99_tradeoff(
             zorder=8,
         )
 
-        frontier = sorted(
-            (row for row in rows if row.is_pareto), key=lambda row: row.used_cores
-        )
-        axis.plot(
-            [row.used_cores for row in frontier],
-            [row.p99_us for row in frontier],
-            color="#333333",
-            linewidth=1.15,
-            linestyle="--",
-            zorder=2,
-        )
-        labeled_frontier = [
-            row
-            for row in frontier
-            if row.transport == "Ubmem"
-            and row.candidate_id in FRONTIER_LABEL_IDS[target_qps]
-        ]
-        for row in labeled_frontier:
-            x_offset, y_offset = FRONTIER_LABEL_OFFSETS[row.candidate_id]
-            align_right = x_offset < 0
-            axis.annotate(
-                _policy_label(row),
-                (row.used_cores, row.p99_us),
-                xytext=(x_offset, y_offset),
-                textcoords="offset points",
-                fontsize=7.1,
-                color="#222222",
-                ha="right" if align_right else "left",
-                va="center",
-                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 0.12},
-            )
-
         axis.set_title(LOAD_TITLES[target_qps], fontweight="bold")
         axis.set_xlabel("Total CPU (vCPU-equivalents)")
         axis.set_ylabel("P99 latency (µs, log scale)")
@@ -790,7 +726,6 @@ def _plot_cpu_p99_tradeoff(
         axis.grid(True, which="both")
         axis.set_xlim(0, max(row.used_cores for row in rows) * 1.16)
         axis.margins(y=0.20)
-        _add_quota_axis(axis)
 
     legend_axis = axes.flat[5]
     legend_axis.axis("off")
@@ -802,7 +737,7 @@ def _plot_cpu_p99_tradeoff(
             linestyle="none",
             markerfacecolor=color,
             markeredgecolor=color,
-            label=f"BUD={bud}",
+            label=f"Budget={bud}",
         )
         for bud, color in BUD_COLORS.items()
     ]
@@ -819,15 +754,12 @@ def _plot_cpu_p99_tradeoff(
         for sleep, marker in SLEEP_MARKERS.items()
     ]
     state_handles = [
-        Line2D([0], [0], marker="D", linestyle="none", color="#222222", label="Polling baseline (4-run mean ± min–max)"),
-        Line2D([0], [0], marker="x", linestyle="none", color="#AAAAAA", label="Target not sustained"),
-        Line2D([0], [0], color="#333333", linestyle="--", label="Eligible Pareto frontier"),
-        Line2D([0], [0], marker="*", markersize=10, linestyle="none", color="#B2182B", label="Socket anchor (gate passed)"),
-        Line2D([0], [0], marker="*", markersize=10, linestyle="none", markerfacecolor="white", markeredgecolor="#777777", label="Socket anchor (gate failed)"),
+        Line2D([0], [0], marker="D", linestyle="none", color="#222222", label="Polling baseline"),
+        Line2D([0], [0], marker="*", markersize=10, linestyle="none", color="#B2182B", label="Socket reference"),
     ]
     first = legend_axis.legend(
         handles=bud_handles,
-        title="Idle BUD (color)",
+        title="Empty-poll budget (color)",
         loc="upper left",
         bbox_to_anchor=(0.0, 1.0),
         frameon=False,
@@ -845,7 +777,7 @@ def _plot_cpu_p99_tradeoff(
     legend_axis.add_artist(second)
     legend_axis.legend(
         handles=state_handles,
-        title="Baseline, gate, and anchor",
+        title="Reference",
         loc="upper left",
         bbox_to_anchor=(0.0, 0.38),
         frameon=False,
@@ -855,8 +787,7 @@ def _plot_cpu_p99_tradeoff(
     figure.text(
         0.5,
         0.014,
-        "Eligible frontier requires reported Sustain ≥ 99.5%. Polling baseline whiskers are four-run "
-        "min–max ranges, not confidence intervals. Socket is a system-level anchor, not a GQM IRQ A/B.",
+        "Red dashed lines mark the Socket CPU and P99 reference. All measured points are shown regardless of attainment.",
         ha="center",
         fontsize=8.7,
         color="#444444",
@@ -870,15 +801,15 @@ def _plot_p99_budget_boundary(
     output_dir: Path,
 ) -> list[Path]:
     figure, axes = plt.subplots(
-        5, 1, figsize=(14.8, 12.2), constrained_layout=True
+        2, 3, figsize=(15.6, 9.1), constrained_layout=True
     )
-    for axis, target_qps in zip(axes, TARGET_QPS_VALUES):
+    for axis, target_qps in zip(axes.flat[:5], TARGET_QPS_VALUES):
         load = [row for row in boundaries if row.target_qps == target_qps]
-        axis.set_title(LOAD_TITLES[target_qps], fontweight="bold", loc="left")
+        axis.set_title(LOAD_TITLES[target_qps], fontweight="bold")
         display_max = max(
             row.p99_us
             for row in candidates
-            if row.target_qps == target_qps and row.target_sustained
+            if row.target_qps == target_qps
         ) * 1.18
         x_values = [row.min_p99_budget_us for row in load] + [display_max]
         y_values = [row.used_cores for row in load] + [load[-1].used_cores]
@@ -890,35 +821,40 @@ def _plot_p99_budget_boundary(
             linewidth=1.65,
             zorder=2,
         )
-        annotation_positions = BOUNDARY_ANNOTATION_POSITIONS[target_qps]
-        if len(annotation_positions) != len(load):
-            raise ValueError(
-                f"boundary annotation layout mismatch for {target_qps}: "
-                f"positions={len(annotation_positions)}, boundaries={len(load)}"
-            )
         for index, row in enumerate(load):
             is_socket = row.transport == "Socket"
+            is_polling = row.policy == "Polling baseline"
             axis.scatter(
                 row.min_p99_budget_us,
                 row.used_cores,
-                marker="*" if is_socket else "o",
+                marker=(
+                    "*"
+                    if is_socket
+                    else "D"
+                    if is_polling
+                    else SLEEP_MARKERS[row.sleep_us]
+                ),
                 s=108 if is_socket else 43,
-                color="#B2182B" if is_socket else "#4477AA",
+                color=(
+                    "#B2182B"
+                    if is_socket
+                    else "#222222"
+                    if is_polling
+                    else BUD_COLORS[row.bud]
+                ),
                 edgecolor="#222222",
                 linewidth=0.7,
                 zorder=4 if is_socket else 3,
             )
             axis.annotate(
-                f"≥{_format_latency(row.min_p99_budget_us)}\n"
-                f"{_policy_label(row)}; {row.used_cores:.3f} cores",
+                f"{row.reported_sustain_pct:.1f}%",
                 (row.min_p99_budget_us, row.used_cores),
-                xytext=annotation_positions[index],
-                textcoords="axes fraction",
-                ha="center",
+                xytext=(5, 9 if index % 2 else -12),
+                textcoords="offset points",
+                ha="left",
                 va="center",
                 fontsize=7.2,
                 color="#222222",
-                arrowprops={"arrowstyle": "-", "color": "#777777", "linewidth": 0.5},
                 bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.84, "pad": 0.12},
             )
         axis.set_xscale("log")
@@ -927,12 +863,67 @@ def _plot_p99_budget_boundary(
         axis.set_xlabel("Allowed P99 budget (µs, log scale)")
         axis.set_ylabel("Minimum Total CPU\n(vCPU-equivalents)")
         axis.grid(True, which="both")
+    legend_axis = axes.flat[5]
+    legend_axis.axis("off")
+    budget_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="none",
+            markerfacecolor=color,
+            markeredgecolor=color,
+            label=f"Budget={bud}",
+        )
+        for bud, color in BUD_COLORS.items()
+    ]
+    sleep_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker=marker,
+            linestyle="none",
+            markerfacecolor="#777777",
+            markeredgecolor="#777777",
+            label=SLEEP_LABELS[sleep],
+        )
+        for sleep, marker in SLEEP_MARKERS.items()
+    ]
+    reference_handles = [
+        Line2D([0], [0], marker="D", linestyle="none", color="#222222", label="Polling baseline"),
+        Line2D([0], [0], marker="*", markersize=10, linestyle="none", color="#B2182B", label="Socket reference"),
+    ]
+    first = legend_axis.legend(
+        handles=budget_handles,
+        title="Empty-poll budget (color)",
+        loc="upper left",
+        bbox_to_anchor=(0.0, 1.0),
+        frameon=False,
+        ncol=2,
+    )
+    legend_axis.add_artist(first)
+    second = legend_axis.legend(
+        handles=sleep_handles,
+        title="Configured Sleep (marker)",
+        loc="upper left",
+        bbox_to_anchor=(0.0, 0.68),
+        frameon=False,
+        ncol=2,
+    )
+    legend_axis.add_artist(second)
+    legend_axis.legend(
+        handles=reference_handles,
+        title="Reference",
+        loc="upper left",
+        bbox_to_anchor=(0.0, 0.38),
+        frameon=False,
+    )
     _add_heading(figure, "fbthrift Minimum CPU Required by P99 SLO")
     _reserve_caption_space(figure)
     figure.text(
         0.5,
         0.018,
-        "Selection rule: minimize Total CPU subject to reported Sustain ≥ 99.5% and measured P99 ≤ budget.",
+        "Selection rule: minimize Total CPU among all measured candidates with P99 ≤ budget, without an attainment gate. Point labels show Attainment (%).",
         ha="center",
         fontsize=8.7,
         color="#444444",

@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 
 from netpoll_gqm_idle_analysis import (
+    SLO_FIGURE_LAYOUT,
+    SLO_GQM_MARKER,
     build_policy_boundaries,
     build_tradeoff_candidates,
     derive_measurements,
@@ -222,50 +224,30 @@ def test_policy_boundaries_select_minimum_cpu_under_each_p99_budget() -> None:
     )
     boundaries = build_policy_boundaries(candidates)
 
-    expected = {
-        7_700: [
-            (20, "GQM", "B1024", 10_000, 3.194),
-            (120, "Socket", "Socket", None, 0.239),
-            (1150, "GQM", "B1", 100, 0.217),
-            (19240, "GQM", "B16", 10_000, 0.113),
-            (19260, "GQM", "B1", 10_000, 0.112),
-        ],
-        77_000: [
-            (30, "GQM", "B1024", 1000, 6.931),
-            (40, "GQM", "B0/256 duplicate", 10, 5.8115),
-            (120, "GQM", "B0/256 duplicate", 100, 5.5515),
-            (250, "Socket", "Socket", None, 2.117),
-            (1320, "GQM", "B16", 1000, 1.598),
-            (2290, "GQM", "B1", 100, 1.571),
-        ],
-        192_500: [
-            (50, "GQM", "B1024", 10, 8.500),
-            (65, "GQM", "B0/256 duplicate", 10, 8.027),
-            (80, "GQM", "B1024", 1000, 7.183),
-            (340, "Socket", "Socket", None, 5.136),
-        ],
-        385_000: [
-            (330, "GQM", "B1024", 1, 11.712),
-            (335, "GQM", "B0/256 duplicate", 10, 11.4745),
-        ],
+    by_id = {row.candidate_id: row for row in candidates}
+    assert {row.target_qps for row in boundaries} == {
+        row.target_qps for row in candidates
     }
-    assert len(boundaries) == 17
-    for target_qps, expected_segments in expected.items():
-        actual = [
-            (
-                segment.min_p99_budget_us,
-                segment.transport,
-                segment.policy,
-                segment.sleep_us,
-                segment.used_cores,
-            )
-            for segment in boundaries
-            if segment.target_qps == target_qps
+    assert any(segment.attainment_pct < 99.5 for segment in boundaries)
+    for segment in boundaries:
+        selected = by_id[segment.candidate_id]
+        assert segment.attainment_pct == pytest.approx(
+            selected.attainment_pct, abs=0.001
+        )
+        feasible = [
+            row
+            for row in candidates
+            if row.target_qps == segment.target_qps
+            and row.tp99_us is not None
+            and row.used_cores is not None
+            and row.tp99_us <= segment.min_p99_budget_us
         ]
-        assert actual == expected_segments
+        assert segment.used_cores == pytest.approx(
+            min(row.used_cores for row in feasible if row.used_cores is not None)
+        )
 
 
-def test_policy_boundaries_are_left_closed_and_near_capacity_is_empty() -> None:
+def test_policy_boundaries_are_left_closed_and_include_near_capacity() -> None:
     candidates = build_tradeoff_candidates(
         derive_measurements(load_measurements(DATA_PATH)),
         load_socket_measurements(SOCKET_PATH),
@@ -273,30 +255,29 @@ def test_policy_boundaries_are_left_closed_and_near_capacity_is_empty() -> None:
     boundaries = build_policy_boundaries(candidates)
     low = [segment for segment in boundaries if segment.target_qps == 7_700]
 
-    assert [segment.max_p99_budget_us for segment in low] == [
-        120,
-        1150,
-        19240,
-        19260,
-        None,
-    ]
-    assert not any(segment.target_qps == 731_500 for segment in boundaries)
+    assert all(
+        current.max_p99_budget_us == following.min_p99_budget_us
+        for current, following in zip(low, low[1:])
+    )
+    assert low[-1].max_p99_budget_us is None
+    assert any(segment.target_qps == 731_500 for segment in boundaries)
     assert low[0].quota_occupancy_pct == pytest.approx(
         3.194 / 16 * 100, abs=0.001
     )
 
 
-def test_policy_boundary_csv_has_17_lf_terminated_rows(tmp_path: Path) -> None:
+def test_policy_boundary_csv_preserves_all_segments_with_lf_endings(tmp_path: Path) -> None:
     candidates = build_tradeoff_candidates(
         derive_measurements(load_measurements(DATA_PATH)),
         load_socket_measurements(SOCKET_PATH),
     )
     output = tmp_path / "boundaries.csv"
 
-    write_policy_boundaries_csv(build_policy_boundaries(candidates), output)
+    boundaries = build_policy_boundaries(candidates)
+    write_policy_boundaries_csv(boundaries, output)
 
     text = output.read_text(encoding="utf-8")
-    assert len(text.splitlines()) == 18
+    assert len(text.splitlines()) == len(boundaries) + 1
     assert "0.111999" not in text
     assert "11.491999" not in text
     assert b"\r\n" not in output.read_bytes()
@@ -336,13 +317,12 @@ def test_figures_expose_resource_cpu_and_decision_semantics(
     ).read_text(encoding="utf-8")
 
     for svg in (tradeoff_svg, boundary_svg):
-        assert "S/C symmetric BUD + Sleep" in svg
+        assert "S/C symmetric empty-poll budget + sleep" in svg
         assert "Client container: 8 vCPU" in svg
         assert "Server container: 8 vCPU" in svg
         assert "Combined quota: 16 vCPU" in svg
         assert "Payload: 1 KiB (1024 B)" in svg
         assert "Concurrency: 128" in svg
-        assert "sum of thread-level process CPU" in svg
         assert "100% load = 770K TPS" in svg
         for load_label in ("1% load", "10% load", "25% load", "50% load", "95% load"):
             assert load_label in svg
@@ -350,11 +330,32 @@ def test_figures_expose_resource_cpu_and_decision_semantics(
         assert "731.5K QPS" not in svg
         assert all(line == line.rstrip() for line in svg.splitlines())
 
-    assert "Combined container quota occupancy (%)" in tradeoff_svg
+    assert "Combined container quota occupancy (%)" not in tradeoff_svg
     assert "GQM Idle Policy CPU–P99 Trade-off" in tradeoff_svg
-    assert "Socket event-driven reference" in tradeoff_svg
-    assert "two-run min–max" in tradeoff_svg
+    assert "Socket reference" in tradeoff_svg
+    assert "Empty-poll budget (color)" in tradeoff_svg
+    assert "Budget=256" in tradeoff_svg
+    assert "Budget=0" not in tradeoff_svg
+    assert "B0/256" not in tradeoff_svg
+    assert "Total client + server CPU (vCPU-equivalents)" in tradeoff_svg
+    assert "P99 latency (µs, log scale)" in tradeoff_svg
+    assert "relative to Socket" not in tradeoff_svg
+    assert "Attainment" in tradeoff_svg
+    assert "Target not sustained" not in tradeoff_svg
+    assert "Pareto frontier" not in tradeoff_svg
+    assert "gate passed" not in tradeoff_svg
+    assert "gate failed" not in tradeoff_svg
+    assert "two-run min–max" not in tradeoff_svg
+    assert "attainment gate" not in tradeoff_svg
     assert "P99 budget" in boundary_svg
     assert "Minimum CPU Required by P99 SLO" in boundary_svg
-    assert "No policy satisfies the 99.5% attainment gate" in boundary_svg
+    assert "No policy satisfies the 99.5% attainment gate" not in boundary_svg
+    assert "attainment" not in boundary_svg.lower()
     assert "Socket is a system-level reference, not a GQM IRQ measurement" in boundary_svg
+    assert "B0/256" not in boundary_svg
+    assert "Empty-poll budget (color)" not in boundary_svg
+    assert "Sleep (marker)" not in boundary_svg
+    assert "b256-s10us" in boundary_svg
+    assert SLO_GQM_MARKER == "o"
+    assert SLO_FIGURE_LAYOUT == (5, 1)
+    assert "sum of thread-level process CPU" in boundary_svg

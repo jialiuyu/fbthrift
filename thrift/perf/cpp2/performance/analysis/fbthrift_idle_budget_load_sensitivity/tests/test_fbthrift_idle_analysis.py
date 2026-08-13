@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -145,7 +146,7 @@ def test_load_summary_preserves_gate_counts_and_ranges() -> None:
     assert (high.min_p99_us, high.max_p99_us) == pytest.approx((1_633, 18_471))
 
 
-def test_policy_boundaries_use_only_all_gate_eligible_candidates() -> None:
+def test_policy_boundaries_include_all_measured_candidates_and_attainment() -> None:
     candidates = build_tradeoff_candidates(
         derive_measurements(load_measurements(DATA_PATH)),
         load_socket_measurements(SOCKET_PATH),
@@ -154,18 +155,28 @@ def test_policy_boundaries_use_only_all_gate_eligible_candidates() -> None:
 
     by_id = {row.candidate_id: row for row in candidates}
     assert boundaries
-    assert all(by_id[row.candidate_id].target_sustained for row in boundaries)
-    assert not any(
-        row.target_qps == 80_000 and row.transport == "Socket"
+    assert all(
+        row.reported_sustain_pct
+        == pytest.approx(by_id[row.candidate_id].reported_sustain_pct)
         for row in boundaries
     )
-    assert not any(
-        row.target_qps == 40_000 and row.policy == "Polling baseline"
-        for row in boundaries
+    assert {row.target_qps for row in boundaries} == {
+        row.target_qps for row in candidates
+    }
+
+    unsustained = next(row for row in candidates if not row.target_sustained)
+    forced_low_cpu = replace(
+        unsustained,
+        used_cores=0.001,
+        total_cpu_pct=0.1,
     )
+    modified = [
+        forced_low_cpu if row.candidate_id == unsustained.candidate_id else row
+        for row in candidates
+    ]
     assert any(
-        row.target_qps == 152_000 and row.transport == "Socket"
-        for row in boundaries
+        row.candidate_id == unsustained.candidate_id
+        for row in build_policy_boundaries(modified)
     )
 
 
@@ -229,9 +240,13 @@ def test_figures_are_fbthrift_only_and_state_resource_semantics(
         "02_fbthrift_p99_budget_minimum_cpu_boundary.png",
         "02_fbthrift_p99_budget_minimum_cpu_boundary.svg",
     }
-    svg = "\n".join(
-        path.read_text(encoding="utf-8") for path in paths if path.suffix == ".svg"
+    tradeoff_svg = (tmp_path / "01_fbthrift_cpu_p99_tradeoff.svg").read_text(
+        encoding="utf-8"
     )
+    boundary_svg = (
+        tmp_path / "02_fbthrift_p99_budget_minimum_cpu_boundary.svg"
+    ).read_text(encoding="utf-8")
+    svg = f"{tradeoff_svg}\n{boundary_svg}"
     assert "fbthrift" in svg
     assert "Server: 8 vCPU" in svg
     assert "Client: 4 vCPU" in svg
@@ -245,4 +260,21 @@ def test_figures_are_fbthrift_only_and_state_resource_semantics(
     assert svg.count("100% load = 160K QPS") == 2
     assert "1.6K target QPS" not in svg
     assert "152K target QPS" not in svg
+    assert "Empty-poll budget (color)" in tradeoff_svg
+    assert "Budget=256" in tradeoff_svg
+    assert "Total CPU (vCPU-equivalents)" in tradeoff_svg
+    assert "P99 latency (µs, log scale)" in tradeoff_svg
+    assert "relative to Socket" not in tradeoff_svg
+    assert "Attainment" in tradeoff_svg
+    assert "Combined quota occupancy" not in tradeoff_svg
+    assert "Target not sustained" not in tradeoff_svg
+    assert "Pareto frontier" not in tradeoff_svg
+    assert "gate passed" not in tradeoff_svg
+    assert "gate failed" not in tradeoff_svg
+    assert "min–max" not in tradeoff_svg
+    assert "BUD=" not in svg
+    assert "B16/" not in boundary_svg
+    assert "Budget=16" in boundary_svg
+    assert "without an attainment gate" in boundary_svg
+    assert "Attainment" in boundary_svg
     assert all(path.stat().st_size > 10_000 for path in paths)

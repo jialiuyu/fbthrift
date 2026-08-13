@@ -83,14 +83,13 @@ TPS/gate 的重复性；它不支持把低负载 CPU 或 p99.9 的细小差异�
 
 ![S/C symmetric CPU-P99 trade-off](figures/01_sc_symmetric_cpu_p99_tradeoff.png)
 
-下方横轴是两端线程级进程 CPU 之和折算的 vCPU-equivalents；上方横轴是相对两端合计
-`16 vCPU` 配额的占用率。彩色 GQM 点和实心 Socket 五角星满足 99.5% gate；灰色标记
-未满足。`B0/256` 点的横纵 whisker 是两次重复的 CPU/P99 min–max。黑色虚线连接 GQM
-与合格 Socket 的联合 Pareto frontier。
+横轴是两端线程级进程 CPU 之和折算的 vCPU-equivalents，纵轴为 P99。全部实测 GQM 点均
+正常展示，不按 attainment 改变透明度；Socket 使用红色五角星及横纵虚线标出 CPU 与 P99。
+图中不绘制误差棒或 Pareto 连接线，以保留直接的 CPU–P99 对照。
 
 Socket 五个锚点的原始结果为：
 
-| Load | TPS | Attainment | p99 | p99.9 | Total CPU | 边界资格 |
+| Load | TPS | Attainment | p99 | p99.9 | Total CPU | Attainment≥99.5% |
 |---:|---:|---:|---:|---:|---:|:---:|
 | 1% | 7.7K | 100.00% | 120us | 570us | 0.239 cores | Yes |
 | 10% | 77.0K | 100.00% | 250us | 400us | 2.117 cores | Yes |
@@ -117,41 +116,19 @@ Socket 五个锚点的原始结果为：
 
 ![Minimum CPU required by P99 SLO](figures/02_p99_budget_minimum_cpu_boundary.png)
 
-第二张图把 Pareto 点转成可执行选择规则：给定 target QPS 和允许的 P99 budget，在满足
-`Attainment >= 99.5%` 且实测 `p99 <= budget` 的点中选择 Total CPU 最低者。
+第二张图按五档负载分别绘制横向阶梯：给定允许的 P99 budget，在全部实测候选中选择
+Total CPU 最低者。图中不使用 attainment 门槛；GQM 标签采用 `b<budget>-s<sleep>`，
+Socket 单独使用红色五角星。
 
 ```text
 BestPolicy(load, P99_budget)
 = argmin TotalCPU(policy)
-  subject to attainment >= 99.5%
-             p99 <= P99_budget
+  subject to p99 <= P99_budget
 ```
 
-边界区间采用左闭右开语义，最后一段延伸到更宽松的 P99 budget：
-
-| Load | P99 budget 区间 | 最低 CPU 策略 | Total CPU | 配额占用 |
-|---:|---:|---|---:|---:|
-| 1% | `[20us, 120us)` | `BUD=1024, Sleep=10ms` | 3.194 cores | 19.962% |
-| 1% | `[120us, 1.15ms)` | `Socket` | 0.239 cores | 1.494% |
-| 1% | `[1.15ms, 19.24ms)` | `BUD=1, Sleep=100us` | 0.217 cores | 1.356% |
-| 1% | `[19.24ms, 19.26ms)` | `BUD=16, Sleep=10ms` | 0.113 cores | 0.706% |
-| 1% | `>=19.26ms` | `BUD=1, Sleep=10ms` | 0.112 cores | 0.700% |
-| 10% | `[30us, 40us)` | `BUD=1024, Sleep=1ms` | 6.931 cores | 43.319% |
-| 10% | `[40us, 120us)` | `BUD=0/256 repeat mean, Sleep=10us` | 5.8115 cores | 36.322% |
-| 10% | `[120us, 250us)` | `BUD=0/256 repeat mean, Sleep=100us` | 5.5515 cores | 34.697% |
-| 10% | `[250us, 1.32ms)` | `Socket` | 2.117 cores | 13.231% |
-| 10% | `[1.32ms, 2.29ms)` | `BUD=16, Sleep=1ms` | 1.598 cores | 9.988% |
-| 10% | `>=2.29ms` | `BUD=1, Sleep=100us` | 1.571 cores | 9.819% |
-| 25% | `[50us, 65us)` | `BUD=1024, Sleep=10us` | 8.500 cores | 53.125% |
-| 25% | `[65us, 80us)` | `BUD=0/256 repeat mean, Sleep=10us` | 8.027 cores | 50.169% |
-| 25% | `[80us, 340us)` | `BUD=1024, Sleep=1ms` | 7.183 cores | 44.894% |
-| 25% | `>=340us` | `Socket` | 5.136 cores | 32.100% |
-| 50% | `[330us, 335us)` | `BUD=1024, Sleep=1us` | 11.712 cores | 73.200% |
-| 50% | `>=335us` | `BUD=0/256 repeat mean, Sleep=10us` | 11.4745 cores | 71.716% |
-
-边界使用重复候选的中心均值，min–max whisker 不参与保守放大；因此它仍只是当前离散观测
-的描述性规则，不是生产参数或带统计置信度的阈值。Socket 只有前三档通过 gate 并进入
-边界；后两档只作为无法维持目标吞吐的 capacity 参考。
+边界区间采用左闭右开语义，最后一段延伸到更宽松的 P99 budget。完整 41 段边界及其原始
+attainment 保存在 `data/netpoll_gqm_idle_policy_boundaries.csv`。边界使用重复候选的中心均值，
+只是当前离散观测的描述性规则；尤其是 50% 和 95% load，必须回看 attainment 后再解释。
 
 ## 第一阶段解释
 

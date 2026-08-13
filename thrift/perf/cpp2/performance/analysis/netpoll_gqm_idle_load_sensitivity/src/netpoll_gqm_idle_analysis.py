@@ -21,7 +21,7 @@ BUD_VALUES = (0, 1, 16, 256, 1024)
 SLEEP_US_VALUES = (1, 10, 100, 1000, 10_000)
 PAYLOAD_LABEL = "Payload: 1 KiB (1024 B)"
 RESOURCE_LABEL = (
-    "S/C symmetric BUD + Sleep | Client container: 8 vCPU | "
+    "S/C symmetric empty-poll budget + sleep | Client container: 8 vCPU | "
     "Server container: 8 vCPU | Combined quota: 16 vCPU"
 )
 WORKLOAD_LABEL = (
@@ -48,6 +48,8 @@ POLICY_COLORS = {
 }
 SLEEP_MARKERS = {1: "o", 10: "s", 100: "^", 1000: "D", 10_000: "P"}
 SLEEP_LABELS = {1: "1 µs", 10: "10 µs", 100: "100 µs", 1000: "1 ms", 10_000: "10 ms"}
+SLO_FIGURE_LAYOUT = (5, 1)
+SLO_GQM_MARKER = "o"
 
 
 @dataclass(frozen=True)
@@ -181,6 +183,7 @@ class PolicyBoundary:
     sleep_us: int | None
     repeat_count: int
     used_cores: float
+    attainment_pct: float
     total_cpu_pct: float
     quota_occupancy_pct: float
 
@@ -577,7 +580,6 @@ def build_policy_boundaries(
             row
             for row in rows
             if row.target_qps == target_qps
-            and row.target_sustained
             and row.tp99_us is not None
             and row.used_cores is not None
             and row.total_cpu_pct is not None
@@ -613,6 +615,7 @@ def build_policy_boundaries(
                     sleep_us=selected.sleep_us,
                     repeat_count=selected.repeat_count,
                     used_cores=round(selected.used_cores, 4),
+                    attainment_pct=round(selected.attainment_pct, 3),
                     total_cpu_pct=round(selected.total_cpu_pct, 2),
                     quota_occupancy_pct=round(
                         selected.used_cores / 16.0 * 100.0, 3
@@ -741,21 +744,28 @@ def _format_latency(value_us: float) -> str:
 def _policy_label(policy: str, sleep_us: int | None) -> str:
     if policy == "Socket":
         return "Socket"
-    compact_policy = "B0/256" if policy == "B0/256 duplicate" else policy
     assert sleep_us is not None
-    return f"{compact_policy}/S{SLEEP_LABELS[sleep_us]}"
+    budget = {
+        "B0/256 duplicate": 256,
+        "B1": 1,
+        "B16": 16,
+        "B1024": 1024,
+    }[policy]
+    return f"Budget {budget} · Sleep {SLEEP_LABELS[sleep_us]}"
 
 
-def _add_quota_axis(axis: plt.Axes) -> None:
-    quota_axis = axis.secondary_xaxis(
-        "top",
-        functions=(
-            lambda cores: cores / 16.0 * 100.0,
-            lambda occupancy: occupancy / 100.0 * 16.0,
-        ),
-    )
-    quota_axis.set_xlabel("Combined container quota occupancy (%)", labelpad=3)
-    quota_axis.tick_params(labelsize=7.8, pad=1.5)
+def _compact_slo_label(policy: str, sleep_us: int | None) -> str:
+    if policy == "Socket":
+        return "Socket"
+    assert sleep_us is not None
+    budget = {
+        "B0/256 duplicate": 256,
+        "B1": 1,
+        "B16": 16,
+        "B1024": 1024,
+    }[policy]
+    sleep = f"{sleep_us}us" if sleep_us < 1000 else f"{sleep_us // 1000}ms"
+    return f"b{budget}-s{sleep}"
 
 
 def _plot_cpu_p99_tradeoff(
@@ -770,92 +780,50 @@ def _plot_cpu_p99_tradeoff(
             for row in _load_rows(rows, target_qps)
             if row.used_cores is not None and row.tp99_us is not None
         ]
-        unsustained_gqm = [
-            row
-            for row in load_rows
-            if row.transport == "GQM" and not row.target_sustained
-        ]
-        if unsustained_gqm:
-            axis.scatter(
-                [row.used_cores for row in unsustained_gqm],
-                [row.tp99_us for row in unsustained_gqm],
-                marker="x",
-                s=28,
-                color="#B0B0B0",
-                linewidth=0.9,
-                alpha=0.70,
-                zorder=1,
-            )
-        for row in (row for row in load_rows if row.transport == "GQM"):
-            assert row.sleep_us is not None
-            color = (
-                POLICY_COLORS[row.policy]
-                if row.target_sustained
-                else "#B0B0B0"
-            )
-            if row.repeat_count == 2:
-                assert (
-                    row.used_cores is not None
-                    and row.used_cores_min is not None
-                    and row.used_cores_max is not None
-                    and row.tp99_us is not None
-                    and row.tp99_us_min is not None
-                    and row.tp99_us_max is not None
-                )
-                axis.errorbar(
-                    row.used_cores,
-                    row.tp99_us,
-                    xerr=[[row.used_cores - row.used_cores_min], [row.used_cores_max - row.used_cores]],
-                    yerr=[[row.tp99_us - row.tp99_us_min], [row.tp99_us_max - row.tp99_us]],
-                    fmt=SLEEP_MARKERS[row.sleep_us],
-                    markersize=6.2,
-                    markerfacecolor=color if row.target_sustained else "white",
-                    markeredgecolor="#222222" if row.target_sustained else "#999999",
-                    markeredgewidth=0.75,
-                    ecolor=color,
-                    elinewidth=0.9,
-                    capsize=2.2,
-                    alpha=0.92 if row.target_sustained else 0.58,
-                    zorder=4,
-                )
-            elif row.target_sustained:
-                axis.scatter(
-                    row.used_cores,
-                    row.tp99_us,
-                    marker=SLEEP_MARKERS[row.sleep_us],
-                    s=52,
-                    facecolor=color,
-                    edgecolor="#222222",
-                    linewidth=0.75,
-                    alpha=0.92,
-                    zorder=3,
-                )
-
         socket = next(row for row in load_rows if row.transport == "Socket")
         assert socket.used_cores is not None and socket.tp99_us is not None
-        socket_color = "#B2182B" if socket.target_sustained else "#777777"
+        for row in (row for row in load_rows if row.transport == "GQM"):
+            assert (
+                row.sleep_us is not None
+                and row.used_cores is not None
+                and row.tp99_us is not None
+            )
+            color = POLICY_COLORS[row.policy]
+            axis.scatter(
+                row.used_cores,
+                row.tp99_us,
+                marker=SLEEP_MARKERS[row.sleep_us],
+                s=52,
+                facecolor=color,
+                edgecolor="#222222",
+                linewidth=0.75,
+                alpha=1.0,
+                zorder=3,
+            )
+
+        socket_color = "#B2182B"
         axis.axvline(
             socket.used_cores,
             color=socket_color,
-            linewidth=0.8,
-            linestyle=(0, (3, 3)),
-            alpha=0.60,
-            zorder=0,
+            linewidth=0.9,
+            linestyle=(0, (4, 3)),
+            alpha=0.70,
+            zorder=1,
         )
         axis.axhline(
             socket.tp99_us,
             color=socket_color,
-            linewidth=0.8,
-            linestyle=(0, (3, 3)),
-            alpha=0.60,
-            zorder=0,
+            linewidth=0.9,
+            linestyle=(0, (4, 3)),
+            alpha=0.70,
+            zorder=1,
         )
         axis.scatter(
             socket.used_cores,
             socket.tp99_us,
             marker="*",
             s=155,
-            facecolor=socket_color if socket.target_sustained else "white",
+            facecolor=socket_color,
             edgecolor=socket_color,
             linewidth=1.25,
             zorder=7,
@@ -863,7 +831,7 @@ def _plot_cpu_p99_tradeoff(
         socket_label = (
             f"Socket: {socket.used_cores:.3f} cores, "
             f"{_format_latency(socket.tp99_us)}, "
-            f"{socket.attainment_pct:.2f}%"
+            f"Attainment {socket.attainment_pct:.1f}%"
         )
         axis.annotate(
             socket_label,
@@ -877,67 +845,20 @@ def _plot_cpu_p99_tradeoff(
             bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 0.15},
             zorder=8,
         )
-        frontier = sorted(
-            (row for row in load_rows if row.is_pareto),
-            key=lambda row: row.used_cores or 0,
-        )
-        if frontier:
-            axis.plot(
-                [row.used_cores for row in frontier],
-                [row.tp99_us for row in frontier],
-                color="#333333",
-                linewidth=1.15,
-                linestyle="--",
-                zorder=2,
-            )
-            right_edge = max(row.used_cores or 0 for row in load_rows) * 1.11
-            offsets = {
-                7_700: ((7, -18), (7, 9), (7, -18), (7, 9), (-7, 9)),
-                77_000: ((7, -18), (7, 9), (7, 12), (7, -16), (7, 12), (-7, 12)),
-                192_500: ((7, -18), (7, 9), (7, -18), (-7, 9)),
-                385_000: ((7, -17), (-7, 9)),
-            }.get(target_qps, ())
-            frontier_gqm = [row for row in frontier if row.transport == "GQM"]
-            for index, row in enumerate(frontier_gqm):
-                assert row.used_cores is not None and row.tp99_us is not None
-                offset = offsets[index] if index < len(offsets) else (7, 8)
-                align_right = row.used_cores > right_edge * 0.72
-                axis.annotate(
-                    _policy_label(row.policy, row.sleep_us),
-                    (row.used_cores, row.tp99_us),
-                    xytext=(-abs(offset[0]), offset[1]) if align_right else offset,
-                    textcoords="offset points",
-                    fontsize=7.3,
-                    color="#222222",
-                    ha="right" if align_right else "left",
-                    va="center",
-                    bbox={
-                        "facecolor": "white",
-                        "edgecolor": "none",
-                        "alpha": 0.78,
-                        "pad": 0.12,
-                    },
-                )
         title = LOAD_TITLES[target_qps]
-        if target_qps == 731_500:
-            title += " — near-capacity stress"
-            axis.text(
-                0.5,
-                0.06,
-                "No policy satisfies the 99.5% attainment gate",
-                ha="center",
-                transform=axis.transAxes,
-                fontsize=8.2,
-                color="#555555",
-            )
         axis.set_title(title, fontweight="bold")
-        axis.set_xlabel("Total client + server CPU (vCPU-equivalents)")
+        axis.set_xlabel(
+            "Total client + server CPU (vCPU-equivalents)"
+        )
         axis.set_ylabel("P99 latency (µs, log scale)")
         axis.set_yscale("log")
         axis.grid(True, which="both")
-        axis.set_xlim(0, max(row.used_cores or 0 for row in load_rows) * 1.16)
+        axis.set_xlim(
+            0,
+            max(row.used_cores for row in load_rows if row.used_cores is not None)
+            * 1.16,
+        )
         axis.margins(y=0.20)
-        _add_quota_axis(axis)
 
     legend_axis = axes.flat[5]
     legend_axis.axis("off")
@@ -949,7 +870,12 @@ def _plot_cpu_p99_tradeoff(
             linestyle="none",
             markerfacecolor=color,
             markeredgecolor=color,
-            label=policy,
+            label={
+                "B0/256 duplicate": "Budget=256",
+                "B1": "Budget=1",
+                "B16": "Budget=16",
+                "B1024": "Budget=1024",
+            }[policy],
         )
         for policy, color in POLICY_COLORS.items()
     ]
@@ -969,42 +895,17 @@ def _plot_cpu_p99_tradeoff(
         Line2D(
             [0],
             [0],
-            marker="x",
-            linestyle="none",
-            color="#B0B0B0",
-            label="Target not sustained",
-        ),
-        Line2D(
-            [0],
-            [0],
-            color="#333333",
-            linestyle="--",
-            label="Pareto frontier",
-        ),
-        Line2D(
-            [0],
-            [0],
             marker="*",
             markersize=10,
             linestyle="none",
             markerfacecolor="#B2182B",
             markeredgecolor="#B2182B",
-            label="Socket event-driven reference (gate passed)",
-        ),
-        Line2D(
-            [0],
-            [0],
-            marker="*",
-            markersize=10,
-            linestyle="none",
-            markerfacecolor="white",
-            markeredgecolor="#777777",
-            label="Socket reference (gate failed)",
+            label="Socket reference",
         ),
     ]
     first_legend = legend_axis.legend(
         handles=policy_handles,
-        title="GQM policy (color)",
+        title="Empty-poll budget (color)",
         loc="upper left",
         bbox_to_anchor=(0.0, 1.0),
         frameon=False,
@@ -1022,7 +923,7 @@ def _plot_cpu_p99_tradeoff(
     legend_axis.add_artist(second_legend)
     legend_axis.legend(
         handles=state_handles,
-        title="Attainment and reference",
+        title="Reference",
         loc="upper left",
         bbox_to_anchor=(0.0, 0.34),
         frameon=False,
@@ -1032,9 +933,7 @@ def _plot_cpu_p99_tradeoff(
     figure.text(
         0.5,
         0.012,
-        "CPU metric: sum of thread-level process CPU across client and server; "
-        "100% = one vCPU-equivalent. Frontier uses candidates satisfying the 99.5% attainment gate. "
-        "B0/256 whiskers are two-run min–max ranges, not confidence intervals.",
+        "Red dashed lines mark the Socket CPU and P99 reference. All measured points are shown regardless of attainment.",
         ha="center",
         fontsize=8.8,
         color="#444444",
@@ -1047,18 +946,10 @@ def _plot_p99_budget_boundary(
 ) -> list[Path]:
     boundaries = build_policy_boundaries(rows)
     figure, axes = plt.subplots(
-        5,
-        1,
+        *SLO_FIGURE_LAYOUT,
         figsize=(14.5, 11.2),
         constrained_layout=True,
-        gridspec_kw={"height_ratios": (1, 1, 1, 1, 0.48)},
     )
-    annotation_offsets = {
-        7_700: ((6, -18), (6, 10), (6, -18), (-8, 28), (-8, -20)),
-        77_000: ((6, -18), (6, 10), (6, -18), (6, 10), (6, -18), (-6, 10)),
-        192_500: ((6, -18), (6, 11), (6, -18), (-6, 11)),
-        385_000: ((6, -18), (-6, 12)),
-    }
     for axis, target_qps in zip(axes, TARGET_QPS_VALUES):
         load_boundaries = [
             boundary
@@ -1066,37 +957,10 @@ def _plot_p99_budget_boundary(
             if boundary.target_qps == target_qps
         ]
         axis.set_title(LOAD_TITLES[target_qps], fontweight="bold", loc="left")
-        if not load_boundaries:
-            axis.set_facecolor("#F5F5F5")
-            axis.text(
-                0.5,
-                0.66,
-                "No policy satisfies the 99.5% attainment gate",
-                ha="center",
-                va="center",
-                transform=axis.transAxes,
-                fontsize=10,
-                fontweight="bold",
-                color="#555555",
-            )
-            axis.text(
-                0.5,
-                0.26,
-                "Maximum observed attainment: 96.72%",
-                ha="center",
-                va="center",
-                transform=axis.transAxes,
-                fontsize=9,
-                color="#666666",
-            )
-            axis.set_xticks([])
-            axis.set_yticks([])
-            continue
-
         complete_p99 = [
             row.tp99_us
             for row in _load_rows(rows, target_qps)
-            if row.target_sustained and row.tp99_us is not None
+            if row.tp99_us is not None
         ]
         display_max = max(
             max(complete_p99) * 1.10,
@@ -1116,64 +980,52 @@ def _plot_p99_budget_boundary(
             linewidth=1.65,
             zorder=2,
         )
+        max_used_cores = max(
+            boundary.used_cores for boundary in load_boundaries
+        )
         for boundary in load_boundaries:
             is_socket = boundary.transport == "Socket"
             axis.scatter(
                 boundary.min_p99_budget_us,
                 boundary.used_cores,
-                marker="*" if is_socket else "o",
-                s=105 if is_socket else 42,
+                marker="*" if is_socket else SLO_GQM_MARKER,
+                s=105 if is_socket else 38,
                 color="#B2182B" if is_socket else "#4477AA",
                 edgecolor="#222222",
-                linewidth=0.7,
+                linewidth=0.8 if is_socket else 0.65,
                 zorder=4 if is_socket else 3,
             )
-        offsets = annotation_offsets[target_qps]
         for index, boundary in enumerate(load_boundaries):
-            offset = offsets[index]
-            align_right = offset[0] < 0
+            is_socket = boundary.transport == "Socket"
+            label_offsets = ((6, 8), (6, -10), (6, 16), (6, -18))
+            offset = label_offsets[index % len(label_offsets)]
+            if boundary.used_cores <= max_used_cores * 0.08:
+                offset = (6, 8 + (index % 2) * 9)
+            elif boundary.used_cores >= max_used_cores * 0.90:
+                offset = (6, -10 - (index % 2) * 9)
             axis.annotate(
-                f"≥{_format_latency(boundary.min_p99_budget_us)}\n"
-                f"{_policy_label(boundary.policy, boundary.sleep_us)}; "
-                f"{boundary.used_cores:.3f} cores",
+                _compact_slo_label(boundary.policy, boundary.sleep_us),
                 (boundary.min_p99_budget_us, boundary.used_cores),
                 xytext=offset,
                 textcoords="offset points",
-                ha="right" if align_right else "left",
+                ha="left",
                 va="center",
                 fontsize=7.3,
-                color="#222222",
-                arrowprops={
-                    "arrowstyle": "-",
-                    "color": "#777777",
-                    "linewidth": 0.55,
-                    "shrinkA": 2,
-                    "shrinkB": 2,
-                },
-                bbox={
-                    "facecolor": "white",
-                    "edgecolor": "none",
-                    "alpha": 0.82,
-                    "pad": 0.12,
-                },
+                color="#B2182B" if is_socket else "#333333",
             )
         axis.set_xscale("log")
         axis.set_xlim(load_boundaries[0].min_p99_budget_us * 0.88, display_max)
-        axis.set_ylim(0, max(boundary.used_cores for boundary in load_boundaries) * 1.25)
+        axis.set_ylim(0, max_used_cores * 1.25)
         axis.set_xlabel("Allowed P99 budget (µs, log scale)")
+        axis.set_ylabel("Minimum total CPU\n(vCPU-equivalents)")
         axis.grid(True, which="both")
-    figure.supylabel(
-        "Minimum total CPU (vCPU-equivalents)",
-        x=0.008,
-        fontsize=10,
-    )
     _add_heading(figure, "Minimum CPU Required by P99 SLO")
     _reserve_caption_space(figure)
     figure.text(
         0.5,
         0.018,
-        "Selection rule: minimize total CPU subject to attainment ≥ 99.5% and measured P99 ≤ budget. "
-        "Each step begins at an observed candidate center; duplicate GQM centers are two-run means.",
+        "Selection rule: minimize total CPU among measured candidates with P99 ≤ budget. "
+        "Labels use b<budget>-s<sleep>; duplicate GQM centers are two-run means.",
         ha="center",
         fontsize=8.8,
         color="#444444",
