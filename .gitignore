@@ -50,3 +50,7 @@ cmake_install.cmake
 /build/thrift
 /compile_commands.json
 /thrift/lib/java/**/target
+
+# IDE conference
+.vscode
+.obsidian
