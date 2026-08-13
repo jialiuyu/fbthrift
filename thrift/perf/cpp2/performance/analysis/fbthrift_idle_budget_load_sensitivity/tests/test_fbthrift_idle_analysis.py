@@ -266,7 +266,9 @@ def test_figures_are_fbthrift_only_and_state_resource_semantics(
     assert "min–max" not in tradeoff_svg
     assert "BUD=" not in svg
     assert "B16/" not in boundary_svg
-    assert "Budget=16" in boundary_svg
-    assert "without an attainment gate" in boundary_svg
-    assert "Attainment" in boundary_svg
+    assert "Budget=16" not in boundary_svg
+    assert "b16-s1us" in boundary_svg
+    assert "b0-s100us" in boundary_svg
+    assert "Labels use b&lt;budget&gt;-s&lt;sleep&gt;" in boundary_svg
+    assert "Attainment" not in boundary_svg
     assert all(path.stat().st_size > 10_000 for path in paths)

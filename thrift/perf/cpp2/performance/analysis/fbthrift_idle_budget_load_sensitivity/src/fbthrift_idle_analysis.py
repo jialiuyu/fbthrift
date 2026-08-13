@@ -39,6 +39,8 @@ BUD_COLORS = {
 }
 SLEEP_MARKERS = {1: "o", 10: "s", 100: "^"}
 SLEEP_LABELS = {1: "1 µs", 10: "10 µs", 100: "100 µs"}
+SLO_FIGURE_LAYOUT = (5, 1)
+SLO_UBMEM_MARKER = "o"
 FRONTIER_LABEL_IDS = {
     1_600: {"ubmem-1600-b1-s1", "ubmem-1600-b1-s10"},
     16_000: {"ubmem-16000-b16-s1", "ubmem-16000-b1-s10"},
@@ -614,6 +616,14 @@ def _policy_label(row: TradeoffCandidate | PolicyBoundary) -> str:
     return f"Budget {row.bud} · Sleep {SLEEP_LABELS[row.sleep_us]}"
 
 
+def _compact_slo_label(row: PolicyBoundary) -> str:
+    if row.transport == "Socket":
+        return "Socket"
+    assert row.bud is not None and row.sleep_us is not None
+    sleep = f"{row.sleep_us}us" if row.sleep_us < 1_000 else f"{row.sleep_us // 1_000}ms"
+    return f"b{row.bud}-s{sleep}"
+
+
 def _add_heading(figure: plt.Figure, title: str) -> None:
     figure.suptitle(title, fontsize=15, fontweight="bold", y=0.995)
     figure.text(
@@ -783,16 +793,22 @@ def _plot_p99_budget_boundary(
     output_dir: Path,
 ) -> list[Path]:
     figure, axes = plt.subplots(
-        2, 3, figsize=(15.6, 9.1), constrained_layout=True
+        *SLO_FIGURE_LAYOUT,
+        figsize=(14.5, 11.2),
+        constrained_layout=True,
     )
-    for axis, target_qps in zip(axes.flat[:5], TARGET_QPS_VALUES):
+    for axis, target_qps in zip(axes, TARGET_QPS_VALUES):
         load = [row for row in boundaries if row.target_qps == target_qps]
-        axis.set_title(LOAD_TITLES[target_qps], fontweight="bold")
-        display_max = max(
+        axis.set_title(LOAD_TITLES[target_qps], fontweight="bold", loc="left")
+        complete_p99 = [
             row.p99_us
             for row in candidates
             if row.target_qps == target_qps
-        ) * 1.18
+        ]
+        display_max = max(
+            max(complete_p99) * 1.10,
+            load[-1].min_p99_budget_us * 1.55,
+        )
         x_values = [row.min_p99_budget_us for row in load] + [display_max]
         y_values = [row.used_cores for row in load] + [load[-1].used_cores]
         axis.step(
@@ -803,105 +819,61 @@ def _plot_p99_budget_boundary(
             linewidth=1.65,
             zorder=2,
         )
-        for index, row in enumerate(load):
+        max_used_cores = max(row.used_cores for row in load)
+        for row in load:
             is_socket = row.transport == "Socket"
             axis.scatter(
                 row.min_p99_budget_us,
                 row.used_cores,
-                marker="*" if is_socket else SLEEP_MARKERS[row.sleep_us],
-                s=108 if is_socket else 43,
-                color="#B2182B" if is_socket else BUD_COLORS[row.bud],
+                marker="*" if is_socket else SLO_UBMEM_MARKER,
+                s=105 if is_socket else 38,
+                color="#B2182B" if is_socket else "#4477AA",
                 edgecolor="#222222",
-                linewidth=0.7,
+                linewidth=0.8 if is_socket else 0.65,
                 zorder=4 if is_socket else 3,
             )
+        for index, row in enumerate(load):
+            is_socket = row.transport == "Socket"
+            label_offsets = ((6, 8), (6, -10), (6, 16), (6, -18))
+            offset = label_offsets[index % len(label_offsets)]
+            if row.used_cores <= max_used_cores * 0.08:
+                offset = (6, 8 + (index % 2) * 9)
+            elif row.used_cores >= max_used_cores * 0.90:
+                offset = (6, -10 - (index % 2) * 9)
             axis.annotate(
-                f"{row.reported_sustain_pct:.1f}%",
+                _compact_slo_label(row),
                 (row.min_p99_budget_us, row.used_cores),
-                xytext=(5, 9 if index % 2 else -12),
+                xytext=offset,
                 textcoords="offset points",
                 ha="left",
                 va="center",
-                fontsize=7.2,
-                color="#222222",
-                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.84, "pad": 0.12},
+                fontsize=7.3,
+                color="#B2182B" if is_socket else "#333333",
             )
         axis.set_xscale("log")
-        axis.set_xlim(load[0].min_p99_budget_us * 0.90, display_max)
-        axis.set_ylim(0, max(row.used_cores for row in load) * 1.28)
+        axis.set_xlim(load[0].min_p99_budget_us * 0.88, display_max)
+        axis.set_ylim(0, max_used_cores * 1.25)
         axis.set_xlabel("Allowed P99 budget (µs, log scale)")
-        axis.set_ylabel("Minimum Total CPU\n(vCPU-equivalents)")
+        axis.set_ylabel("Minimum total CPU\n(vCPU-equivalents)")
         axis.grid(True, which="both")
-    legend_axis = axes.flat[5]
-    legend_axis.axis("off")
-    budget_handles = [
-        Line2D(
-            [0],
-            [0],
-            marker="o",
-            linestyle="none",
-            markerfacecolor=color,
-            markeredgecolor=color,
-            label=f"Budget={bud}",
-        )
-        for bud, color in BUD_COLORS.items()
-    ]
-    sleep_handles = [
-        Line2D(
-            [0],
-            [0],
-            marker=marker,
-            linestyle="none",
-            markerfacecolor="#777777",
-            markeredgecolor="#777777",
-            label=SLEEP_LABELS[sleep],
-        )
-        for sleep, marker in SLEEP_MARKERS.items()
-    ]
-    reference_handles = [
-        Line2D([0], [0], marker="*", markersize=10, linestyle="none", color="#B2182B", label="Socket reference"),
-    ]
-    first = legend_axis.legend(
-        handles=budget_handles,
-        title="Empty-poll budget (color)",
-        loc="upper left",
-        bbox_to_anchor=(0.0, 1.0),
-        frameon=False,
-        ncol=2,
-    )
-    legend_axis.add_artist(first)
-    second = legend_axis.legend(
-        handles=sleep_handles,
-        title="Configured Sleep (marker)",
-        loc="upper left",
-        bbox_to_anchor=(0.0, 0.68),
-        frameon=False,
-        ncol=2,
-    )
-    legend_axis.add_artist(second)
-    legend_axis.legend(
-        handles=reference_handles,
-        title="Reference",
-        loc="upper left",
-        bbox_to_anchor=(0.0, 0.38),
-        frameon=False,
-    )
-    _add_heading(figure, "fbthrift Minimum CPU Required by P99 SLO")
+    _add_heading(figure, "Minimum CPU Required by P99 SLO")
     _reserve_caption_space(figure)
     figure.text(
         0.5,
         0.018,
-        "Selection rule: minimize Total CPU among all measured candidates with P99 ≤ budget, without an attainment gate. Point labels show Attainment (%).",
+        "Selection rule: minimize total CPU among measured candidates with P99 ≤ budget. "
+        "Labels use b<budget>-s<sleep>.",
         ha="center",
-        fontsize=8.7,
+        fontsize=8.8,
         color="#444444",
     )
     figure.text(
         0.5,
-        0.005,
-        "Each step begins at an observed candidate; Socket is a system-level anchor, not a GQM IRQ measurement.",
+        0.004,
+        "CPU metric: sum of thread-level process CPU across client and server. "
+        "Socket is a system-level reference, not a GQM IRQ measurement; candidates are single-run.",
         ha="center",
-        fontsize=8.7,
+        fontsize=8.8,
         color="#444444",
     )
     return _save_figure(
