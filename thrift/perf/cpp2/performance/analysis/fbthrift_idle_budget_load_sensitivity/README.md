@@ -2,7 +2,8 @@
 
 ## 基本结论
 
-本报告独立整理 fbthrift 的 80 个 Ubmem idle 配置和同五档归一化负载的 5 个 Socket
+本报告归档 fbthrift 的 80 个 Ubmem idle 配置，并使用其中 60 个 idle-enabled 配置和
+同五档归一化负载的 5 个 Socket
 系统级锚点。固定资源为 Server 8 vCPU、Client 4 vCPU；图表中的 Total CPU 是两端进程所有
 线程 CPU% 之和折算的 vCPU-equivalents。无 idle 最大能力按 `160K QPS = 100% load` 定义，
 五档负载依次为 `1%、10%、25%、50%、95%`。
@@ -27,7 +28,7 @@
 | Server 容器 | `8 vCPU` |
 | Client 容器 | `4 vCPU` |
 | 合计容器配额 | `12 vCPU` |
-| Ubmem 完整性 | `80/80` 完整点 |
+| Ubmem 完整性 | `80/80` 完整点；图表使用 60 个 idle-enabled 点 |
 | Socket 锚点 | 同五档归一化负载，各 1 点 |
 | Gate | 原始报告 `Sustain% >= 99.5%` |
 
@@ -40,30 +41,25 @@ Quota use (%)  = Used cores / 12 × 100
 QPS/core       = Achieved QPS / Used cores
 ```
 
-idle disabled 时 BUD 不参与实际退避决策。每档四个 disabled 点原样保留，但在 Pareto 和
-策略边界中聚合为 `Polling baseline` 的四次重复：中心取均值，whisker 取 min–max，且
-四次均通过 gate 才有边界资格。该范围不是置信区间。
+idle-disabled 的 20 个原始点继续保留在数据文件和文末原始结果表中，但不进入候选、策略
+边界或图表。
 
 ## 负载级汇总
 
-| Load | Ubmem 点 | 通过 gate | 最大 Achieved | P99 范围 | Total CPU 范围 |
+| Load | Idle-enabled 点 | 通过 gate | 最大 Achieved | P99 范围 | Total CPU 范围 |
 |---:|---:|---:|---:|---:|---:|
-| 1% | 16 | 16 | 1.6K | 99.5–302.1us | 0.207–7.685 cores |
-| 10% | 16 | 16 | 16.1K | 110.7us–1.32ms | 0.664–7.681 cores |
-| 25% | 16 | 15 | 40.2K | 203.2us–2.59ms | 1.352–7.683 cores |
-| 50% | 16 | 16 | 80.1K | 329.7us–15.91ms | 2.349–7.681 cores |
-| 95% | 16 | 9 | 152.2K | 1.63–18.47ms | 3.887–7.681 cores |
-
-Polling baseline 四次重复在 1%、10%、50% load 整体通过 gate；25% load 有一次 99.2%，
-95% load 四次只有 81.9–82.3%，所以这两档的 baseline 聚合候选不进入合格 frontier。
-五档 baseline 的 Total CPU 都约为 7.65–7.69 cores，说明它主要提供“持续轮询”的资源参照。
+| 1% | 12 | 12 | 1.6K | 99.5–302.1us | 0.207–7.596 cores |
+| 10% | 12 | 12 | 16.1K | 110.7–411.5us | 0.664–7.596 cores |
+| 25% | 12 | 12 | 40.2K | 203.2–683.6us | 1.352–7.603 cores |
+| 50% | 12 | 12 | 80.1K | 329.7us–2.11ms | 2.349–7.612 cores |
+| 95% | 12 | 9 | 152.2K | 1.63–18.47ms | 3.887–7.619 cores |
 
 ## 1. CPU–P99 取舍
 
 ![fbthrift CPU-P99 trade-off](figures/01_fbthrift_cpu_p99_tradeoff.png)
 
-图中展示全部实测 Ubmem 点，不再按 Sustain% 改变透明度或资格；Polling baseline 使用黑色
-菱形。Socket 使用红色五角星，并以横纵虚线和文字直接给出 CPU、P99 与 Sustain%。
+图中展示 60 个 idle-enabled Ubmem 实测点，不按 Sustain% 改变透明度。Socket 使用红色
+五角星，并以横纵虚线和文字直接给出 CPU、P99 与 Sustain%。
 
 | Load | Socket Sustain | Socket P99 | Socket Total CPU | Sustain≥99.5% |
 |---:|---:|---:|---:|:---:|
@@ -159,7 +155,7 @@ uv run python src/fbthrift_idle_analysis.py \\
 - [Socket 规范化 5 点](data/fbthrift_socket_qps_baseline.csv)
 - [逐点派生数据](data/fbthrift_idle_budget_load_sensitivity_derived.csv)
 - [负载级汇总](data/fbthrift_idle_budget_load_sensitivity_summary.csv)
-- [联合候选与重复范围](data/fbthrift_idle_tradeoff_candidates.csv)
+- [联合展示候选](data/fbthrift_idle_tradeoff_candidates.csv)
 - [P99-SLO 策略边界](data/fbthrift_idle_policy_boundaries.csv)
 - [来源与缺失字段](data/SOURCE.md)
 

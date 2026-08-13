@@ -62,8 +62,8 @@ A/B。
 
 2026-08-12 又归档一组独立的 fbthrift `Target QPS × Sleep × BUD` 扩展矩阵：固定
 Server 8 vCPU、Client 4 vCPU，包含 80 个 Ubmem 完整点和 5 个 Socket 系统级锚点。
-该矩阵使用 `reported Sustain% >= 99.5%` gate，并把 idle-disabled 下四个无效 BUD 取值
-作为同一 polling baseline 的四次重复。它补充了负载敏感的 CPU–P99 frontier 和
+该矩阵使用 `reported Sustain% >= 99.5%` gate；idle-disabled 数据只作原始证据归档，
+不进入候选和图表。其余 60 个 idle-enabled 点补充了负载敏感的 CPU–P99 frontier 和
 P99-SLO 最低 CPU 边界，但仍不是同 transport IRQ A/B。
 
 ## Related Experiments
@@ -154,10 +154,10 @@ repeats                  = 1 observed run/cell
 - 矩阵：target QPS `{1.6K,16K,40K,80K,152K}`，idle disabled 或 Sleep
   `{1us,10us,100us}`，BUD `{0,1,16,256}`，共 80 个完整 Ubmem 点。
 - 同 target QPS 的 Socket 锚点共 5 个；只作为系统级事件驱动参照。
-- 五档 Ubmem 原始点通过 99.5% gate 的数量分别为 `16/16、16/16、15/16、16/16、9/16`。
-- idle-disabled 时 BUD 不生效，因此每档四行聚合为四次 polling baseline 重复。1.6K、
-  16K、80K 的四次均通过 gate；40K 有一次 `99.2%`，152K 为 `81.9–82.3%`，后二者
-  不进入合格 frontier。
+- 五档 idle-enabled Ubmem 点通过 99.5% gate 的数量分别为
+  `12/12、12/12、12/12、12/12、9/12`。
+- idle-disabled 时 BUD 不生效；对应 20 行保留在原始和规范化数据中，但不进入候选、
+  策略边界和图表。
 - Socket 在 1.6K/16K/40K/152K 通过 gate；80K 为 `99.0%`，只作容量锚点。152K Socket
   虽为 `99.6%`，但 P99 为 `12.12ms`，说明 gate 不能替代尾延迟约束。
 - 80K 下 Socket 未通过 gate；Ubmem 合格 frontier 从
@@ -186,8 +186,8 @@ TCP 与 Ubmem 的 transport 和软件路径不同；当前结果是 HWQueue noti
 - 因果和硬件归因置信度：低；没有 queue counter、实际 arm/notify/backoff/wakeup
   时序和精确 build provenance。
 - 主要缺失：真实 HWQueue IRQ A/B、重复交错运行、执行顺序和误差区间。
-- BUD 扩展矩阵除 idle-disabled 四次偶然重复外，其余 Ubmem cell 和 Socket 锚点均为
-  单次观测；P99-SLO 边界是描述性离散选择，不是统计置信区间或生产默认值。
+- BUD 扩展矩阵的 idle-enabled Ubmem cell 和 Socket 锚点均为单次观测；P99-SLO 边界是
+  描述性离散选择，不是统计置信区间或生产默认值。
 - 不能外推：不同 payload/arrival、shared HWQueue、跨 NUMA、其他 firmware/机器，或
   event-driven IRQ 模式。
 

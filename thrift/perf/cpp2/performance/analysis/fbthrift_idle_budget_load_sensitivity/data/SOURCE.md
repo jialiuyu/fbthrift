@@ -57,9 +57,8 @@ target QPS 集合。原始表中的吞吐、Sustain%、P50/P99/P99.9/Max、SendL
 - Server 容器为 `8 vCPU`、Client 容器为 `4 vCPU`，因此
   `quota_occupancy = used_cores / 12 × 100%`。
 
-idle disabled 时 BUD 不参与实际退避决策。同一 target QPS 下的四行仍全部保留，但在候选
-表、Pareto 和策略边界中聚合成 `Polling baseline` 的四次重复：中心取算术均值，误差棒
-取 min–max，只有四次都通过 gate 才标记为合格。该范围不是置信区间。
+idle disabled 时 BUD 不参与实际退避决策。这 20 行仍完整保留在原始、规范化和逐点派生
+CSV 中，但不进入 trade-off 候选、P99-SLO 策略边界和图表。
 
 Socket 结果包含 transport 和 software stack 的整体差异，只作为系统级事件驱动锚点；
 它不是 GQM IRQ 测量，也不能用于把差异归因于 IRQ。
@@ -69,6 +68,6 @@ Socket 结果包含 transport 和 software stack 的整体差异，只作为系�
 - `fbthrift_idle_budget_load_sensitivity.csv`：80 个规范化 Ubmem 原始点。
 - `fbthrift_socket_qps_baseline.csv`：5 个规范化 Socket 锚点。
 - `fbthrift_idle_budget_load_sensitivity_derived.csv`：逐点 CPU、QPS/core、quota 和 gate。
-- `fbthrift_idle_budget_load_sensitivity_summary.csv`：五档负载的范围汇总。
-- `fbthrift_idle_tradeoff_candidates.csv`：65 个 Ubmem 有效候选与 5 个 Socket 候选。
+- `fbthrift_idle_budget_load_sensitivity_summary.csv`：五档负载下 idle-enabled 点的范围汇总。
+- `fbthrift_idle_tradeoff_candidates.csv`：60 个 idle-enabled Ubmem 候选与 5 个 Socket 候选。
 - `fbthrift_idle_policy_boundaries.csv`：99.5% gate 内的 23 个离散 P99-SLO 选择区间。

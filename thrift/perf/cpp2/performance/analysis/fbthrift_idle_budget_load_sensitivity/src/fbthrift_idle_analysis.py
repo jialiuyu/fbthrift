@@ -333,14 +333,12 @@ def _candidate_from_ubmem(
         raise ValueError("candidate rows must share target QPS")
     gates = [row.target_sustained for row in rows]
     idle_enabled = rows[0].idle_enabled
-    sleep_us = rows[0].sleep_us if idle_enabled else 0
+    if not idle_enabled:
+        raise ValueError("idle-disabled rows are not presentation candidates")
+    sleep_us = rows[0].sleep_us
     bud = rows[0].bud if len(rows) == 1 else None
     return TradeoffCandidate(
-        candidate_id=(
-            f"ubmem-{target_qps}-polling"
-            if not idle_enabled
-            else f"ubmem-{target_qps}-b{bud}-s{sleep_us}"
-        ),
+        candidate_id=f"ubmem-{target_qps}-b{bud}-s{sleep_us}",
         transport="Ubmem",
         policy=policy,
         target_qps=target_qps,
@@ -437,11 +435,6 @@ def build_tradeoff_candidates(
     candidates: list[TradeoffCandidate] = []
     for target_qps in TARGET_QPS_VALUES:
         load_rows = [row for row in rows if row.target_qps == target_qps]
-        baseline = sorted(
-            (row for row in load_rows if not row.idle_enabled),
-            key=lambda row: row.bud,
-        )
-        candidates.append(_candidate_from_ubmem(baseline, "Polling baseline"))
         for row in sorted(
             (row for row in load_rows if row.idle_enabled),
             key=lambda row: (row.sleep_us, row.bud),
@@ -458,7 +451,11 @@ def build_tradeoff_candidates(
 def summarize_by_load(rows: list[DerivedMeasurement]) -> list[LoadSummary]:
     summaries: list[LoadSummary] = []
     for target_qps in TARGET_QPS_VALUES:
-        load_rows = [row for row in rows if row.target_qps == target_qps]
+        load_rows = [
+            row
+            for row in rows
+            if row.target_qps == target_qps and row.idle_enabled
+        ]
         summaries.append(
             LoadSummary(
                 target_qps=target_qps,
@@ -613,8 +610,6 @@ def _format_latency(value_us: float) -> str:
 def _policy_label(row: TradeoffCandidate | PolicyBoundary) -> str:
     if row.transport == "Socket":
         return "Socket"
-    if row.policy == "Polling baseline":
-        return "Polling"
     assert row.bud is not None and row.sleep_us is not None
     return f"Budget {row.bud} · Sleep {SLEEP_LABELS[row.sleep_us]}"
 
@@ -649,30 +644,18 @@ def _plot_cpu_p99_tradeoff(
         socket = next(row for row in rows if row.transport == "Socket")
         ubmem = [row for row in rows if row.transport == "Ubmem"]
         for row in ubmem:
-            if row.policy == "Polling baseline":
-                axis.scatter(
-                    row.used_cores,
-                    row.p99_us,
-                    marker="D",
-                    s=48,
-                    facecolor="#222222",
-                    edgecolor="#222222",
-                    linewidth=0.7,
-                    zorder=5,
-                )
-            else:
-                assert row.bud is not None and row.sleep_us is not None
-                axis.scatter(
-                    row.used_cores,
-                    row.p99_us,
-                    marker=SLEEP_MARKERS[row.sleep_us],
-                    s=51,
-                    facecolor=BUD_COLORS[row.bud],
-                    edgecolor="#222222",
-                    linewidth=0.7,
-                    alpha=1.0,
-                    zorder=3,
-                )
+            assert row.bud is not None and row.sleep_us is not None
+            axis.scatter(
+                row.used_cores,
+                row.p99_us,
+                marker=SLEEP_MARKERS[row.sleep_us],
+                s=51,
+                facecolor=BUD_COLORS[row.bud],
+                edgecolor="#222222",
+                linewidth=0.7,
+                alpha=1.0,
+                zorder=3,
+            )
 
         socket_color = "#B2182B"
         axis.axvline(
@@ -754,7 +737,6 @@ def _plot_cpu_p99_tradeoff(
         for sleep, marker in SLEEP_MARKERS.items()
     ]
     state_handles = [
-        Line2D([0], [0], marker="D", linestyle="none", color="#222222", label="Polling baseline"),
         Line2D([0], [0], marker="*", markersize=10, linestyle="none", color="#B2182B", label="Socket reference"),
     ]
     first = legend_axis.legend(
@@ -823,25 +805,12 @@ def _plot_p99_budget_boundary(
         )
         for index, row in enumerate(load):
             is_socket = row.transport == "Socket"
-            is_polling = row.policy == "Polling baseline"
             axis.scatter(
                 row.min_p99_budget_us,
                 row.used_cores,
-                marker=(
-                    "*"
-                    if is_socket
-                    else "D"
-                    if is_polling
-                    else SLEEP_MARKERS[row.sleep_us]
-                ),
+                marker="*" if is_socket else SLEEP_MARKERS[row.sleep_us],
                 s=108 if is_socket else 43,
-                color=(
-                    "#B2182B"
-                    if is_socket
-                    else "#222222"
-                    if is_polling
-                    else BUD_COLORS[row.bud]
-                ),
+                color="#B2182B" if is_socket else BUD_COLORS[row.bud],
                 edgecolor="#222222",
                 linewidth=0.7,
                 zorder=4 if is_socket else 3,
@@ -890,7 +859,6 @@ def _plot_p99_budget_boundary(
         for sleep, marker in SLEEP_MARKERS.items()
     ]
     reference_handles = [
-        Line2D([0], [0], marker="D", linestyle="none", color="#222222", label="Polling baseline"),
         Line2D([0], [0], marker="*", markersize=10, linestyle="none", color="#B2182B", label="Socket reference"),
     ]
     first = legend_axis.legend(

@@ -62,8 +62,9 @@
 - 当前证据：`N={1,8}`、每线程 target `{3.5K,10K,35K QPS}`、interval
   `{0,10us,100us,1ms,10ms}` 的 30 个 Ubmem 点和 6 个 TCP Socket 对照点全部 `OK`；
   client/server CPU 已采集。新增固定 Server 8 vCPU、Client 4 vCPU 的 80 个
-  `Target QPS × Sleep × BUD` Ubmem 点和 5 个 Socket 锚点；五档 Ubmem 通过 99.5% gate
-  的点数为 `16/16、16/16、15/16、16/16、9/16`。
+  `Target QPS × Sleep × BUD` Ubmem 点和 5 个 Socket 锚点；排除只归档的 idle-disabled
+  记录后，五档 idle-enabled Ubmem 点通过 99.5% gate 的数量为
+  `12/12、12/12、12/12、12/12、9/12`。
 - 初步事实：TCP 在低负载进入 periodic backoff 未覆盖的 CPU–p99 Pareto 区域；到
   `N=8、35K QPS/thread` 时，Ubmem `100us` 同时具有更低 Total CPU 和 p99。
   Ubmem `10us/100us` 的 p99 scale-out amplification 约为 `0.99–1.01x`，TCP 在

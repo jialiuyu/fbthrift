@@ -108,39 +108,30 @@ def test_reported_sustain_controls_socket_gate() -> None:
     ]
 
 
-def test_disabled_idle_rows_become_four_run_candidates() -> None:
+def test_disabled_idle_rows_are_archived_but_not_presentation_candidates() -> None:
     candidates = build_tradeoff_candidates(
         derive_measurements(load_measurements(DATA_PATH)),
         load_socket_measurements(SOCKET_PATH),
     )
-    disabled = [row for row in candidates if row.policy == "Polling baseline"]
 
-    assert len(candidates) == 70
-    assert len(disabled) == 5
-    assert {row.repeat_count for row in disabled} == {4}
-    assert [row.target_sustained for row in disabled] == [
-        True,
-        True,
-        False,
-        True,
-        False,
-    ]
-    low = disabled[0]
-    assert low.used_cores == pytest.approx((7.682 + 7.685 + 7.681 + 7.677) / 4)
-    assert (low.used_cores_min, low.used_cores_max) == pytest.approx((7.677, 7.685))
-    assert (low.p99_us_min, low.p99_us_max) == pytest.approx((222.0, 231.1))
+    assert len(candidates) == 65
+    assert sum(row.transport == "Ubmem" for row in candidates) == 60
+    assert sum(row.transport == "Socket" for row in candidates) == 5
+    assert all(row.idle_enabled is not False for row in candidates)
+    assert {row.repeat_count for row in candidates} == {1}
 
 
 def test_load_summary_preserves_gate_counts_and_ranges() -> None:
     summary = summarize_by_load(derive_measurements(load_measurements(DATA_PATH)))
 
     assert [(row.target_qps, row.sustained_cells) for row in summary] == [
-        (1_600, 16),
-        (16_000, 16),
-        (40_000, 15),
-        (80_000, 16),
+        (1_600, 12),
+        (16_000, 12),
+        (40_000, 12),
+        (80_000, 12),
         (152_000, 9),
     ]
+    assert {row.total_cells for row in summary} == {12}
     high = summary[-1]
     assert high.max_achieved_qps == pytest.approx(152_200)
     assert (high.min_p99_us, high.max_p99_us) == pytest.approx((1_633, 18_471))
@@ -217,7 +208,7 @@ def test_csv_writers_emit_complete_lf_terminated_outputs(tmp_path: Path) -> None
 
     assert len(outputs["derived"].read_text().splitlines()) == 81
     assert len(outputs["summary"].read_text().splitlines()) == 6
-    assert len(outputs["candidates"].read_text().splitlines()) == 71
+    assert len(outputs["candidates"].read_text().splitlines()) == 66
     assert len(outputs["boundaries"].read_text().splitlines()) > 6
     assert all(b"\r\n" not in path.read_bytes() for path in outputs.values())
     joined = "\n".join(path.read_text() for path in outputs.values())
@@ -269,6 +260,7 @@ def test_figures_are_fbthrift_only_and_state_resource_semantics(
     assert "Combined quota occupancy" not in tradeoff_svg
     assert "Target not sustained" not in tradeoff_svg
     assert "Pareto frontier" not in tradeoff_svg
+    assert "Polling baseline" not in svg
     assert "gate passed" not in tradeoff_svg
     assert "gate failed" not in tradeoff_svg
     assert "min–max" not in tradeoff_svg
