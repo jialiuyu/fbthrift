@@ -83,7 +83,8 @@ TPS/gate 的重复性；它不支持把低负载 CPU 或 p99.9 的细小差异�
 
 ![S/C symmetric CPU-P99 trade-off](figures/01_sc_symmetric_cpu_p99_tradeoff.png)
 
-横轴是两端线程级进程 CPU 之和折算的 vCPU-equivalents，纵轴为 P99。全部实测 GQM 点均
+横轴是两端线程级进程 CPU 之和折算的 vCPU-equivalents，保持从左到右递增。纵轴使用断开的
+对数尺度：上方窄带压缩高延迟区，下方主区域放大 Socket 及低 P99 候选。全部实测 GQM 点均
 正常展示，不按 attainment 改变透明度；Socket 使用红色五角星及横纵虚线标出 CPU 与 P99。
 图中不绘制误差棒或 Pareto 连接线，以保留直接的 CPU–P99 对照。
 

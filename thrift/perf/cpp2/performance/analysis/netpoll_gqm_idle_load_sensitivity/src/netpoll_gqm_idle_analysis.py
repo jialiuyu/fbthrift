@@ -50,6 +50,7 @@ SLEEP_MARKERS = {1: "o", 10: "s", 100: "^", 1000: "D", 10_000: "P"}
 SLEEP_LABELS = {1: "1 µs", 10: "10 µs", 100: "100 µs", 1000: "1 ms", 10_000: "10 ms"}
 SLO_FIGURE_LAYOUT = (5, 1)
 SLO_GQM_MARKER = "o"
+TRADEOFF_USES_BROKEN_Y_AXIS = True
 
 
 @dataclass(frozen=True)
@@ -771,10 +772,15 @@ def _compact_slo_label(policy: str, sleep_us: int | None) -> str:
 def _plot_cpu_p99_tradeoff(
     rows: Sequence[TradeoffCandidate], output_dir: Path
 ) -> list[Path]:
-    figure, axes = plt.subplots(
-        2, 3, figsize=(15.8, 9.2), constrained_layout=True
-    )
-    for axis, target_qps in zip(axes.flat[:5], TARGET_QPS_VALUES):
+    figure = plt.figure(figsize=(15.8, 9.2), constrained_layout=True)
+    grid = figure.add_gridspec(2, 3)
+    for index, target_qps in enumerate(TARGET_QPS_VALUES):
+        cell = grid[index // 3, index % 3].subgridspec(
+            2, 1, height_ratios=(0.26, 0.74), hspace=0.05
+        )
+        upper_axis = figure.add_subplot(cell[0])
+        lower_axis = figure.add_subplot(cell[1], sharex=upper_axis)
+        panel_axes = (upper_axis, lower_axis)
         load_rows = [
             row
             for row in _load_rows(rows, target_qps)
@@ -789,51 +795,53 @@ def _plot_cpu_p99_tradeoff(
                 and row.tp99_us is not None
             )
             color = POLICY_COLORS[row.policy]
-            axis.scatter(
-                row.used_cores,
-                row.tp99_us,
-                marker=SLEEP_MARKERS[row.sleep_us],
-                s=52,
-                facecolor=color,
-                edgecolor="#222222",
-                linewidth=0.75,
-                alpha=1.0,
-                zorder=3,
-            )
+            for axis in panel_axes:
+                axis.scatter(
+                    row.used_cores,
+                    row.tp99_us,
+                    marker=SLEEP_MARKERS[row.sleep_us],
+                    s=52,
+                    facecolor=color,
+                    edgecolor="#222222",
+                    linewidth=0.75,
+                    alpha=1.0,
+                    zorder=3,
+                )
 
         socket_color = "#B2182B"
-        axis.axvline(
-            socket.used_cores,
-            color=socket_color,
-            linewidth=0.9,
-            linestyle=(0, (4, 3)),
-            alpha=0.70,
-            zorder=1,
-        )
-        axis.axhline(
+        for axis in panel_axes:
+            axis.axvline(
+                socket.used_cores,
+                color=socket_color,
+                linewidth=0.9,
+                linestyle=(0, (4, 3)),
+                alpha=0.70,
+                zorder=1,
+            )
+            axis.scatter(
+                socket.used_cores,
+                socket.tp99_us,
+                marker="*",
+                s=155,
+                facecolor=socket_color,
+                edgecolor=socket_color,
+                linewidth=1.25,
+                zorder=7,
+            )
+        lower_axis.axhline(
             socket.tp99_us,
             color=socket_color,
             linewidth=0.9,
             linestyle=(0, (4, 3)),
             alpha=0.70,
             zorder=1,
-        )
-        axis.scatter(
-            socket.used_cores,
-            socket.tp99_us,
-            marker="*",
-            s=155,
-            facecolor=socket_color,
-            edgecolor=socket_color,
-            linewidth=1.25,
-            zorder=7,
         )
         socket_label = (
             f"Socket: {socket.used_cores:.3f} cores, "
             f"{_format_latency(socket.tp99_us)}, "
             f"Attainment {socket.attainment_pct:.1f}%"
         )
-        axis.annotate(
+        lower_axis.annotate(
             socket_label,
             (socket.used_cores, socket.tp99_us),
             xytext=(7, 10 if target_qps != 7_700 else -17),
@@ -846,21 +854,68 @@ def _plot_cpu_p99_tradeoff(
             zorder=8,
         )
         title = LOAD_TITLES[target_qps]
-        axis.set_title(title, fontweight="bold")
-        axis.set_xlabel(
+        upper_axis.set_title(title, fontweight="bold")
+        lower_axis.set_xlabel(
             "Total client + server CPU (vCPU-equivalents)"
         )
-        axis.set_ylabel("P99 latency (µs, log scale)")
-        axis.set_yscale("log")
-        axis.grid(True, which="both")
-        axis.set_xlim(
-            0,
-            max(row.used_cores for row in load_rows if row.used_cores is not None)
-            * 1.16,
+        lower_axis.set_ylabel("P99 latency\n(µs, broken log scale)")
+        p99_values = sorted(
+            {
+                row.tp99_us
+                for row in load_rows
+                if row.tp99_us is not None
+            }
         )
-        axis.margins(y=0.20)
+        decision_values = [
+            value for value in p99_values if value <= socket.tp99_us * 1.5
+        ]
+        lower_top = max(decision_values)
+        upper_bottom = min(value for value in p99_values if value > lower_top)
+        for axis in panel_axes:
+            axis.set_yscale("log")
+            axis.grid(True, which="both")
+            axis.set_xlim(
+                0,
+                max(
+                    row.used_cores
+                    for row in load_rows
+                    if row.used_cores is not None
+                )
+                * 1.16,
+            )
+        lower_axis.set_ylim(p99_values[0] * 0.78, lower_top * 1.25)
+        upper_axis.set_ylim(upper_bottom * 0.82, p99_values[-1] * 1.22)
+        upper_axis.spines["bottom"].set_visible(False)
+        lower_axis.spines["top"].set_visible(False)
+        upper_axis.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
+        break_size = 0.012
+        break_style = {"color": "#333333", "clip_on": False, "linewidth": 0.8}
+        upper_axis.plot(
+            (-break_size, break_size),
+            (-break_size, break_size),
+            transform=upper_axis.transAxes,
+            **break_style,
+        )
+        upper_axis.plot(
+            (1 - break_size, 1 + break_size),
+            (-break_size, break_size),
+            transform=upper_axis.transAxes,
+            **break_style,
+        )
+        lower_axis.plot(
+            (-break_size, break_size),
+            (1 - break_size, 1 + break_size),
+            transform=lower_axis.transAxes,
+            **break_style,
+        )
+        lower_axis.plot(
+            (1 - break_size, 1 + break_size),
+            (1 - break_size, 1 + break_size),
+            transform=lower_axis.transAxes,
+            **break_style,
+        )
 
-    legend_axis = axes.flat[5]
+    legend_axis = figure.add_subplot(grid[1, 2])
     legend_axis.axis("off")
     policy_handles = [
         Line2D(

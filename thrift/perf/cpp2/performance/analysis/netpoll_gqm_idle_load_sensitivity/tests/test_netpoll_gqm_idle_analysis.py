@@ -5,6 +5,7 @@ import pytest
 from netpoll_gqm_idle_analysis import (
     SLO_FIGURE_LAYOUT,
     SLO_GQM_MARKER,
+    TRADEOFF_USES_BROKEN_Y_AXIS,
     build_policy_boundaries,
     build_tradeoff_candidates,
     derive_measurements,
@@ -338,9 +339,11 @@ def test_figures_expose_resource_cpu_and_decision_semantics(
     assert "Budget=0" not in tradeoff_svg
     assert "B0/256" not in tradeoff_svg
     assert "Total client + server CPU (vCPU-equivalents)" in tradeoff_svg
-    assert "P99 latency (µs, log scale)" in tradeoff_svg
+    assert "P99 latency" in tradeoff_svg
     assert "relative to Socket" not in tradeoff_svg
     assert "Attainment" in tradeoff_svg
+    assert TRADEOFF_USES_BROKEN_Y_AXIS is True
+    assert "broken log scale" in tradeoff_svg
     assert "Target not sustained" not in tradeoff_svg
     assert "Pareto frontier" not in tradeoff_svg
     assert "gate passed" not in tradeoff_svg
